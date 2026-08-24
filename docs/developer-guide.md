@@ -67,6 +67,54 @@ contracts/           events.schema.json, errors.yaml  ← single source of truth
 prompts/             default templates: summary sections, chat buttons
 ```
 
+## Build and test reference
+
+Every component is testable without the others; run from the repo root.
+
+**Rust workspace** (`crates/*`, after `cargo build`):
+
+| Command | Covers |
+|---|---|
+| `cargo test -p lma-capture` | mixer drain math, mute zero-fill, int16 conversion clamps, device-rebuild state machine |
+| `cargo test -p lma-link` | framing, ≤3 s reconnect-buffer eviction, backoff schedule, single-flight connect guard |
+| `cargo test -p app` | Tauri commands, parameterized writes on Rust-owned tables, reader half of WAL concurrency tests |
+| `cargo clippy --workspace --all-targets -- -D warnings` | lint gate |
+
+**Python workspace** (`uv sync` first):
+
+| Command | Covers |
+|---|---|
+| `uv run pytest python/lma_stt` | Engine protocol conformance, per-provider adapters against recorded fixtures |
+| `uv run pytest python/lma_pipeline` | segment assembler characterization: runs, windows, stable IDs, partial→final overwrite |
+| `uv run pytest python/lma_agent` | graph execution with stubbed tools, MCP loader |
+| `uv run pytest python/lma_summaries` | section chains, template registry merge, action-item extraction |
+| `uv run pytest python/lma_rag` | chunker, embedders, sqlite-vec store, retriever |
+| `uv run pytest python/lma_vp` | scheduler, BotManager, platform adapters against the fake meeting page |
+| `uv run pytest python/sidecar` | WS contract against a fake STT engine, lifecycle supervisor, writer half of WAL concurrency tests |
+
+**Contract validation** — both sides fail independently when a frame shape
+drifts:
+
+| Command | Asserts |
+|---|---|
+| `cargo test -p lma-link --test wire_contract` | every Rust frame type serializes to a `contracts/events.schema.json`-valid payload; known-good JSON parses back |
+| `uv run pytest python/sidecar/tests/test_wire_contract.py` | same guarantee for the Python event builders |
+| `cargo test -p app --test error_catalog` | Rust error registry matches `contracts/errors.yaml`: codes, severities, recovery actions parsed and compared |
+| `uv run pytest python/sidecar/tests/test_error_catalog.py` | same file parsed on the Python side; unknown codes raise |
+
+**Fixture regeneration** — recordings are inputs of record, never edited by
+hand:
+
+1. Reproduce the scenario against the real provider with a live API key;
+   a fixture change starts there, not in an editor.
+2. Save raw provider payloads into `python/lma_stt/tests/fixtures/<provider>/`
+   next to the expected normalized `Result`s.
+3. For pipeline changes, regenerate expected segment emissions into
+   `python/lma_pipeline/tests/fixtures/` from unchanged word-item inputs,
+   then review the golden-output diff before committing.
+4. Commit recording and expected output together; a change that invalidates
+   fixtures is a contracts change (step 1 of [Contracts workflow](#contracts-workflow)).
+
 ## Key interfaces
 
 **STT engine boundary** (`python/lma_stt`) — the only place vendor SDKs are
@@ -138,7 +186,7 @@ for buffer math and state machine parameters.
 Text frames carry JSON, binary frames carry audio:
 
 - Rust → sidecar: `START`, `SPEAKER_CHANGE`, `PAUSE`, `RESUME`, `END`,
-  plus binary stereo PCM (48 kHz, 100 ms chunks)
+  `AGENT_QUERY`, `VP_COMMAND`, plus binary stereo PCM (48 kHz, 100 ms chunks)
 - Sidecar → Rust: `ADD_TRANSCRIPT_SEGMENT`, `ADD_SUMMARY`,
   `ADD_AGENT_ASSIST`, `AGENT_TOKEN`, `THINKING_STEP`, `VP_STATUS`,
   `VP_SCREENSHOT`, `ERROR`
@@ -235,3 +283,75 @@ Pyramid with TDD throughout (red-green-refactor):
 
 Cross-language contracts are enforced automatically against
 `contracts/events.schema.json`.
+
+Fixtures live beside the code they pin. `python/lma_stt/tests/fixtures/<provider>/`
+holds recorded provider payloads — real bytes captured from live providers,
+organized per adapter. `python/lma_pipeline/tests/fixtures/` carries
+word-item streams paired with their expected segment emissions.
+`crates/lma-capture/tests/` pins mixer PCM vectors: input stereo buffers
+plus exact expected interleaved output, covering mute zero-fill and
+partial-tick carryover. Regeneration rules are in
+[Build and test reference](#build-and-test-reference).
+
+## Flow walkthroughs
+
+The three core flows end to end; wire-level sequence diagrams for the first
+live in [WebSocket Streaming API](websocket-streaming-api.md#sequence-diagrams).
+
+### Local meeting lifecycle
+
+```mermaid
+flowchart TD
+    MIC["Microphone tap"] --> MIX["Mixer (lma-capture)"]
+    SYS["System loopback"] --> MIX
+    MIX -->|"stereo s16le, 100 ms"| BUF["Reconnect buffer (lma-link)"]
+    BUF -->|"binary frames + START"| WS["WS 127.0.0.1 token handshake"]
+    WS --> ENG["Engine session (lma_stt)"]
+    ENG --> ASM["Segment assembler (lma_pipeline)"]
+    ASM --> SDB[("segments")]
+    ASM --> EVT["ADD_TRANSCRIPT_SEGMENT"]
+    EVT --> VIEW["Transcript view (webview)"]
+    STOP["Record/Stop clicked"] -->|"END"| SUMS["Summary chains (lma_summaries)"]
+    SUMS --> MDB[("summaries, action_items")]
+    SUMS --> SEVT["ADD_SUMMARY"]
+    SEVT --> VIEW
+```
+
+### Chat question through the agent graph
+
+```mermaid
+flowchart TD
+    Q["Question in chat pane"] --> GRAPH["LangGraph ReAct graph (lma_agent)"]
+    GRAPH --> RETR["Retrieve context (lma_rag + recent segments)"]
+    RETR --> REASON["Model turn"]
+    REASON --> DEC{"Tool call requested?"}
+    DEC -->|"no"| ANSWER["Final answer"]
+    DEC -->|"yes"| TOOL["Execute tool (MCP loader / websearch / query)"]
+    TOOL -->|"result"| OBS["Observation appended"]
+    OBS --> REASON
+    TOOL -->|"raises"| STEPFAIL["THINKING_STEP Success: false (AGENT_TOOL_FAILURE)"]
+    STEPFAIL --> REASON
+    REASON -->|"each step"| STEPS["THINKING_STEP to webview"]
+    ANSWER --> TOKENS["AGENT_TOKEN stream (Seq, Delta)"]
+    TOKENS --> CHAT["Chat pane renders deltas in Seq order"]
+```
+
+### VP container supervision
+
+```mermaid
+flowchart TD
+    DUE["Schedule due (vp_schedules)"] --> MGR["Scheduler wakes BotManager (lma_vp)"]
+    MGR --> P["PENDING"] --> L["LAUNCHING"] --> J["JOINING"] --> IM["IN_MEETING"]
+    IM -->|"CAPTCHA / 2FA / consent wall"| AA["AWAITING_ACTION"]
+    AA -->|"VP_SCREENSHOT"| TK["Takeover view (webview)"]
+    TK -->|"VP_COMMAND CLICK / TYPE"| AA
+    TK -->|"wall cleared"| IM
+    AA -->|"unresolved 300 s"| FL["FAILED"]
+    IM -->|"container dies"| FL
+    IM -->|"meeting ends"| FZ["FINALIZING"] --> DN["DONE"]
+    FL -->|"restart per schedule policy"| MGR
+```
+
+State transitions persist to `vp_tasks`; the 300 s escalation timeout and
+the FAILED-on-timeout rule come from `VP_MANUAL_ACTION_REQUIRED` in
+`contracts/errors.yaml`.
