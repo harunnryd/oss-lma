@@ -1,0 +1,75 @@
+version: 1
+
+errors:
+  - code: STT_PROVIDER_AUTH
+    source: python
+    severity: fatal-stream
+    recovery: surface_settings
+    ui_message_key: err.stt_provider_auth
+  - code: STT_STREAM_RESET
+    source: python
+    severity: retryable
+    recovery: reconnect_backoff
+    limits:
+      max_consecutive: 5
+      reset_after_session_seconds: 10
+      backoff_start_ms: 500
+      backoff_ceiling_ms: 10000
+    ui_message_key: err.stt_stream_reset
+  - code: LINK_DISCONNECTED
+    source: rust
+    severity: retryable
+    recovery: fresh_start_flush_buffer
+    buffer_seconds: 3
+    backoff_start_ms: 500
+    backoff_ceiling_ms: 10000
+    ui_message_key: err.link_disconnected
+  - code: CAPTURE_DEVICE_LOST
+    source: rust
+    severity: retryable
+    recovery: rebuild_streams
+    ui_message_key: err.capture_device_lost
+  - code: CAPTURE_PERMISSION_DENIED
+    source: rust
+    severity: fatal-capture
+    recovery: open_os_settings
+    ui_message_key: err.capture_permission_denied
+  - code: VP_CONTAINER_FAILED
+    source: vp
+    severity: retryable
+    recovery: restart_container
+    ui_message_key: err.vp_container_failed
+  - code: VP_MANUAL_ACTION_REQUIRED
+    source: vp
+    severity: escalation
+    recovery: open_takeover
+    timeout_seconds: 300
+    on_timeout: FAILED
+    ui_message_key: err.vp_manual_action_required
+  - code: AGENT_TOOL_FAILURE
+    source: python
+    severity: degraded
+    recovery: continue_graph
+    ui_message_key: err.agent_tool_failure
+  - code: RAG_EMBEDDING_UNAVAILABLE
+    source: python
+    severity: deferred
+    recovery: defer_ingest
+    ui_message_key: err.rag_embedding_unavailable
+  - code: DB_WRITE_CONFLICT
+    source: python
+    severity: retryable
+    recovery: retry_backoff
+    max_retries: 5
+    ui_message_key: err.db_write_conflict
+  - code: SIDECAR_UNAVAILABLE
+    source: rust
+    severity: fatal-app
+    recovery: respawn_sidecar
+    ui_message_key: err.sidecar_unavailable
+  - code: PORT_BIND_FAILED
+    source: python
+    severity: fatal-app
+    recovery: retry_next_port
+    max_attempts: 10
+    ui_message_key: err.port_bind_failed
