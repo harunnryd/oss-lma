@@ -24,6 +24,12 @@ title: "oss-lma Documentation"
 - [Transcript Summarization](transcript-summarization.md) — Automatic and on-demand summaries, custom prompt templates, structured action items
 - [Meetings Query Tool](meetings-query-tool.md) — Semantic search across past meetings via the local vector store
 
+### Provider Setup
+
+- [Deepgram Setup](deepgram-setup.md) — Reference STT provider: credentials, Nova-3 `language=multi`, connection spec, WordItem mapping, per-channel pricing
+- [AssemblyAI Setup](assemblyai-setup.md) — Universal Streaming v3: credentials, models, turn-based results mapping, session-based billing
+- [Azure Speech Setup](azure-speech-setup.md) — Raw WebSocket STT: resources and regions, detailed output mapping, no-diarization trade-offs, pricing
+
 ### Meeting Sources
 
 - [Meeting Sources Overview](meeting-sources.md) — Side-by-side comparison of capture options and guidance on when to use each
