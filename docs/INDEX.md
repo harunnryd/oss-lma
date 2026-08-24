@@ -29,6 +29,7 @@ title: "oss-lma Documentation"
 - [Meeting Sources Overview](meeting-sources.md) — Side-by-side comparison of capture options and guidance on when to use each
 - [Desktop Capture App](desktop-capture-app.md) — Menu-bar / system-tray app capturing system + mic audio for meetings joined from native apps (no bot)
 - [Virtual Participant](virtual-participant.md) — Headless browser bot joining Zoom and Google Meet meetings inside a local container
+- [VP Join Reliability](vp-join-reliability.md) — Why joins fail, credentials and profiles, AI DOM resolver, retry policy, takeover playbook
 
 ### Voice Assistant
 
@@ -54,5 +55,6 @@ title: "oss-lma Documentation"
 
 - [Updates & Migrations](updates-and-migrations.md) — Updating the app, schema migrations, downgrade policy
 - [Developer Guide](developer-guide.md) — Architecture, process model, data flows, data model, error catalog, testing strategy
+- [Database Schema](database-schema.md) — Full SQLite DDL, indexes with access-pattern rationale, migration machinery
 - [Virtual Participant Local Development](virtual-participant-local-dev.md) — Debug the bot container locally: VNC, fake meeting harness, selector cache
-- [Troubleshooting](troubleshooting.md) — Symptoms indexed by error catalog code, common issues
+- [Troubleshooting](troubleshooting.md) — Diagnostics, symptoms indexed by error catalog code, common questions

@@ -46,13 +46,16 @@ Wire frames are PascalCase (see
 [WebSocket Streaming API](websocket-streaming-api.md)). Reasoning progress:
 
 ```json
-{ "EventType": "THINKING_STEP", "CallId": "...",
+{ "EventType": "THINKING_STEP", "CallId": "...", "QueryId": "...",
   "Seq": 3, "StepType": "tool_use",
   "Content": "",
   "ToolName": "current_meeting_transcript",
   "ToolInput": {"mode": "recent", "lines": 30},
   "ToolResult": null, "Success": null }
 ```
+
+Questions enter as `AGENT_QUERY {QueryId, Message, History}`; every token
+and step streams back correlated by that `QueryId`.
 
 `ToolName`/`ToolInput`/`ToolResult`/`Success` are null except on
 `tool_use`/`tool_result` steps. The UI renders them as a timeline — see the

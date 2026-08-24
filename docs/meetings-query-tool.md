@@ -26,7 +26,9 @@ meetings.
   "channel": "CALLER", "speaker": "Budi", "created_at": "…" }
 ```
 
-Document imports use channel `"DOC"` with `speaker = null`.
+Document imports use channel `"DOC"` with `speaker = null` and null
+offsets — documents have no timeline. Full DDL lives in
+[Database Schema](database-schema.md#rag_chunks).
 
 Queries filter before vector search runs:
 
