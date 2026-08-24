@@ -64,9 +64,31 @@
           "enum": ["CLICK", "TYPE", "CHAT", "RESET_SELECTORS", "END", "PAUSE", "RESUME"],
           "type": "string"
         },
-        "Payload": { "type": "object" }
+        "Payload": { "type": "object",
+          "description": "Command-specific keys; CLICK/TYPE use x/y coordinates or text." }
       },
       "required": ["EventType", "TaskId", "Command"]
+    },
+    "AgentQuery": {
+      "allOf": [{ "$ref": "#/$defs/Envelope" }],
+      "properties": {
+        "EventType": { "const": "AGENT_QUERY" },
+        "QueryId": { "$ref": "#/$defs/Uuid" },
+        "Message": { "type": "string" },
+        "History": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "type": "object",
+            "properties": {
+              "Role": { "enum": ["user", "assistant"] },
+              "Content": { "type": "string" }
+            },
+            "required": ["Role", "Content"]
+          }
+        }
+      },
+      "required": ["EventType", "CallId", "QueryId", "Message"]
     },
     "AddTranscriptSegment": {
       "allOf": [{ "$ref": "#/$defs/Envelope" }],
@@ -107,15 +129,17 @@
       "allOf": [{ "$ref": "#/$defs/Envelope" }],
       "properties": {
         "EventType": { "const": "AGENT_TOKEN" },
+        "QueryId": { "$ref": "#/$defs/Uuid" },
         "Seq": { "type": "integer", "minimum": 0 },
         "Delta": { "type": "string" }
       },
-      "required": ["EventType", "CallId", "Seq", "Delta"]
+      "required": ["EventType", "CallId", "QueryId", "Seq", "Delta"]
     },
     "ThinkingStep": {
       "allOf": [{ "$ref": "#/$defs/Envelope" }],
       "properties": {
         "EventType": { "const": "THINKING_STEP" },
+        "QueryId": { "$ref": "#/$defs/Uuid" },
         "Seq": { "type": "integer" },
         "StepType": { "enum": ["reasoning", "tool_use", "tool_result", "status"] },
         "Content": { "type": "string" },
@@ -165,6 +189,7 @@
     { "$ref": "#/$defs/Resume" },
     { "$ref": "#/$defs/End" },
     { "$ref": "#/$defs/VpCommand" },
+    { "$ref": "#/$defs/AgentQuery" },
     { "$ref": "#/$defs/AddTranscriptSegment" },
     { "$ref": "#/$defs/AddSummary" },
     { "$ref": "#/$defs/AddAgentAssist" },
