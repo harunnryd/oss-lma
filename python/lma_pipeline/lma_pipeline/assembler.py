@@ -56,3 +56,29 @@ class SegmentAssembler:
 
     def on_result(self, result: Result) -> list[dict]:
         return []
+
+    def _refresh(self, run: dict) -> None:
+        timed = [i for i in run["items"] if i.type == "pronunciation"]
+        source = timed if timed else run["items"]
+        run["start"] = min(i.start_time for i in source)
+        run["end"] = max(i.end_time for i in source)
+        run["words"] = sum(1 for i in run["items"] if i.speaker is not None)
+
+    def _runs(self, items: list[WordItem]) -> list[dict]:
+        runs: list[dict] = []
+        for item in items:
+            label = item.speaker
+            if runs:
+                current = runs[-1]
+                if label is None or current["label"] == label:
+                    current["items"].append(item)
+                    continue
+                if current["label"] is None:
+                    current["label"] = label
+                    current["items"].append(item)
+                    continue
+            runs.append({"label": label, "items": [item], "words": 0,
+                         "start": 0.0, "end": 0.0})
+        for run in runs:
+            self._refresh(run)
+        return runs
