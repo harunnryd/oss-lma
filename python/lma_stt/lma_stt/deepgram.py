@@ -1,11 +1,22 @@
 import asyncio
 import json
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, replace
 from typing import Any
 
-from lma_stt.types import ProviderResetError, Result, WordItem
+import websockets
+
+from lma_stt.types import (
+    MeetingContext,
+    ProviderAuthError,
+    ProviderResetError,
+    Result,
+    WordItem,
+)
 
 _PUNCTUATION_SUFFIXES = (",", ".", "!", "?", ";", ":")
+
+Connect = Callable[[str, dict[str, str]], Awaitable[Any]]
 
 
 @dataclass
@@ -67,6 +78,10 @@ def map_message(message: dict) -> Result:
     return {"result_id": result_id, "is_final": is_final, "items": items}
 
 
+async def default_connect(url: str, headers: dict[str, str]) -> Any:
+    return await websockets.connect(url, additional_headers=headers)
+
+
 class DeepgramResultStream:
     def __init__(self, conn: Any):
         self.conn = conn
@@ -107,3 +122,19 @@ class DeepgramResultStream:
                 return map_message(message)
             if kind == "Error":
                 raise ProviderResetError(str(message.get("description", "provider error frame")))
+
+
+class DeepgramEngine:
+    def __init__(self, config: DeepgramConfig, connect: Connect | None = None):
+        self.config = config
+        self._connect = connect or default_connect
+
+    async def start(self, ctx: MeetingContext) -> DeepgramResultStream:
+        cfg = replace(self.config, sample_rate=ctx["sample_rate"])
+        conn = await self._connect(build_url(cfg), {"Authorization": f"Token {cfg.api_key}"})
+        status = conn.response.status_code
+        if status in (401, 403):
+            raise ProviderAuthError(f"handshake rejected with HTTP {status}")
+        if status >= 400:
+            raise ProviderResetError(f"handshake failed with HTTP {status}")
+        return DeepgramResultStream(conn)
