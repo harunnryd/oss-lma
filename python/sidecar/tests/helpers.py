@@ -1,4 +1,5 @@
 import asyncio
+import io
 import re
 import time
 
@@ -68,3 +69,15 @@ async def eventually(predicate, timeout: float = 2.0) -> None:
             return
         await asyncio.sleep(0.01)
     raise AssertionError("condition not met before timeout")
+
+
+async def spawn_sidecar(engine_factory):
+    from sidecar.server import run_server
+
+    sink = io.StringIO()
+    stop = asyncio.Event()
+    task = asyncio.create_task(run_server(engine_factory, stop=stop, ready_sink=sink))
+    await eventually(lambda: "SIDECAR_READY" in sink.getvalue())
+    match = READY_LINE.fullmatch(sink.getvalue())
+    assert match is not None
+    return stop, task, int(match.group("port")), match.group("token")
