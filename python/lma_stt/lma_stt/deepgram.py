@@ -1,5 +1,7 @@
 import asyncio
+import contextlib
 import json
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import Any
@@ -83,19 +85,25 @@ async def default_connect(url: str, headers: dict[str, str]) -> Any:
 
 
 class DeepgramResultStream:
-    def __init__(self, conn: Any):
+    def __init__(self, conn: Any, clock: Callable[[], float] = time.monotonic):
         self.conn = conn
-        self.last_audio_at = 0.0
-        self.keepalive_task = None
+        self.clock = clock
+        self.last_audio_at = clock()
+        self.keepalive_task: asyncio.Task | None = None
         self._closing = False
 
     async def feed(self, pcm: bytes) -> None:
+        self.last_audio_at = self.clock()
         await self.conn.send(pcm)
 
     async def close(self) -> None:
         if self._closing:
             return
         self._closing = True
+        if self.keepalive_task is not None:
+            self.keepalive_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.keepalive_task
         try:
             await self.conn.send(json.dumps({"type": "CloseStream"}))
         finally:
@@ -125,9 +133,19 @@ class DeepgramResultStream:
 
 
 class DeepgramEngine:
-    def __init__(self, config: DeepgramConfig, connect: Connect | None = None):
+    def __init__(
+        self,
+        config: DeepgramConfig,
+        connect: Connect | None = None,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        interval_s: float = 5.0,
+    ):
         self.config = config
         self._connect = connect or default_connect
+        self.clock = clock
+        self.sleep = sleep
+        self.interval_s = interval_s
 
     async def start(self, ctx: MeetingContext) -> DeepgramResultStream:
         cfg = replace(self.config, sample_rate=ctx["sample_rate"])
@@ -137,4 +155,18 @@ class DeepgramEngine:
             raise ProviderAuthError(f"handshake rejected with HTTP {status}")
         if status >= 400:
             raise ProviderResetError(f"handshake failed with HTTP {status}")
-        return DeepgramResultStream(conn)
+        stream = DeepgramResultStream(conn, clock=self.clock)
+        stream.keepalive_task = asyncio.create_task(self._keepalive_loop(stream))
+        return stream
+
+    async def _keepalive_loop(self, stream: DeepgramResultStream) -> None:
+        last_sent = self.clock()
+        while True:
+            await self.sleep(max(0.05, self.interval_s / 10))
+            now = self.clock()
+            if (
+                now - stream.last_audio_at >= self.interval_s
+                and now - last_sent >= self.interval_s
+            ):
+                await stream.conn.send(json.dumps({"type": "KeepAlive"}))
+                last_sent = now
