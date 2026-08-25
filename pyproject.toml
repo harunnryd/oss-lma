@@ -30,6 +30,6 @@ per-file-ignores = { "**/tests/**/*.py" = ["F841", "I001", "B017"] }
 
 [tool.pytest.ini_options]
 testpaths = ["python"]
-pythonpath = ["python/sidecar"]
+pythonpath = ["python", "python/sidecar"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
