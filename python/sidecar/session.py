@@ -8,7 +8,11 @@ from sidecar.frames import (
     INVALID_FRAME_CLOSE_CODE,
     INVALID_FRAME_CODE,
     INVALID_FRAME_CONTEXT,
+    End,
     FrameError,
+    Pause,
+    Resume,
+    SpeakerChange,
     Start,
     error_frame,
     parse_frame,
@@ -49,6 +53,17 @@ class Session:
         match frame:
             case Start():
                 await self._start_session(frame)
+            case SpeakerChange():
+                if self.assembler is not None:
+                    self.assembler.set_active_speaker(frame.channel, frame.active_speaker)
+            case Pause():
+                if self.stream is not None:
+                    self.paused = True
+            case Resume():
+                if self.stream is not None:
+                    self.paused = False
+            case End():
+                await self._close_session(drain=True)
             case _:
                 pass
 
@@ -83,7 +98,7 @@ class Session:
         engine = self.engine_factory(ctx)
         self.stream = await engine.start(ctx)
         self.assembler = SegmentAssembler(frame.call_id)
-        self.pump_task = asyncio.create_task(self._pump())
+        self.pump_task = asyncio.create_task(self._pump(self.stream, self.assembler))
 
     async def _close_session(self, drain: bool) -> None:
         if self.stream is None:
@@ -106,9 +121,7 @@ class Session:
         except (ProviderResetError, ProviderAuthError, ConnectionClosed, OSError):
             pass
 
-    async def _pump(self) -> None:
-        stream = self.stream
-        assembler = self.assembler
+    async def _pump(self, stream, assembler) -> None:
         try:
             async for result in stream:
                 for event in assembler.on_result(result):
