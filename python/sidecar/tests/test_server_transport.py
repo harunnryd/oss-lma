@@ -157,3 +157,17 @@ async def test_run_server_accepts_db_writer_and_record_meeting_kwargs():
         port, token = await task
     assert isinstance(port, int)
     assert re.fullmatch(r"[0-9a-f]{32}", token) is not None
+
+
+async def test_record_meeting_flag_threads_through_to_session():
+    stop, task, port, token = await spawn_sidecar(
+        lambda ctx: ScriptedEngine([]),
+        record_meeting=True,
+    )
+    try:
+        async with connect(f"ws://127.0.0.1:{port}/ws?token={token}") as ws:
+            await ws.send(json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000}))
+            await eventually(lambda: True)
+    finally:
+        stop.set()
+        await task
