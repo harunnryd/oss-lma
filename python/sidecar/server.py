@@ -46,9 +46,15 @@ def _handler(
     engine_factory: Callable,
     sessions: set,
     db_writer: PersistenceWriter | None,
+    record_meeting: bool = False,
 ) -> Callable[[ServerConnection], object]:
     async def handle(connection: ServerConnection) -> None:
-        session = Session(connection, engine_factory, db=db_writer)
+        session = Session(
+            connection,
+            engine_factory,
+            db=db_writer,
+            record_meeting=record_meeting,
+        )
         sessions.add(session)
         try:
             await session.run()
@@ -74,7 +80,7 @@ async def run_server(
     for attempt in range(MAX_BIND_ATTEMPTS):
         try:
             server = await serve(
-                _handler(engine_factory, sessions, db_writer),
+                _handler(engine_factory, sessions, db_writer, record_meeting),
                 host="127.0.0.1",
                 port=port,
                 process_request=_gate(token),
