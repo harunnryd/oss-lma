@@ -11,6 +11,7 @@ from websockets.asyncio.server import ServerConnection, serve
 from websockets.http11 import Request, Response
 
 from sidecar.session import Session
+from sidecar.storage.persistence import PersistenceWriter
 
 MAX_BIND_ATTEMPTS = 10
 WS_PATH = "/ws"
@@ -41,9 +42,13 @@ def _gate(token: str) -> Callable[[ServerConnection, Request], Response | None]:
     return process_request
 
 
-def _handler(engine_factory: Callable, sessions: set) -> Callable[[ServerConnection], object]:
+def _handler(
+    engine_factory: Callable,
+    sessions: set,
+    db_writer: PersistenceWriter | None,
+) -> Callable[[ServerConnection], object]:
     async def handle(connection: ServerConnection) -> None:
-        session = Session(connection, engine_factory)
+        session = Session(connection, engine_factory, db=db_writer)
         sessions.add(session)
         try:
             await session.run()
@@ -57,6 +62,9 @@ async def run_server(
     engine_factory: Callable,
     stop: asyncio.Event | None = None,
     ready_sink: TextIO | None = None,
+    *,
+    db_writer: PersistenceWriter | None = None,
+    record_meeting: bool = False,
 ) -> tuple[int, str]:
     sink = ready_sink if ready_sink is not None else sys.stdout
     token = secrets.token_hex(16)
@@ -66,7 +74,7 @@ async def run_server(
     for attempt in range(MAX_BIND_ATTEMPTS):
         try:
             server = await serve(
-                _handler(engine_factory, sessions),
+                _handler(engine_factory, sessions, db_writer),
                 host="127.0.0.1",
                 port=port,
                 process_request=_gate(token),

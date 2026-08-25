@@ -135,3 +135,25 @@ async def test_session_runs_over_real_socket():
     finally:
         stop.set()
         await task
+
+
+async def test_run_server_accepts_db_writer_and_record_meeting_kwargs():
+    stop = asyncio.Event()
+    sink = io.StringIO()
+    task = asyncio.create_task(
+        run_server(
+            lambda ctx: ScriptedEngine([]),
+            stop=stop,
+            ready_sink=sink,
+            db_writer=None,
+            record_meeting=False,
+        )
+    )
+    try:
+        await eventually(lambda: READY_LINE.fullmatch(sink.getvalue()) is not None)
+        assert READY_LINE.fullmatch(sink.getvalue()) is not None
+    finally:
+        stop.set()
+        port, token = await task
+    assert isinstance(port, int)
+    assert re.fullmatch(r"[0-9a-f]{32}", token) is not None
