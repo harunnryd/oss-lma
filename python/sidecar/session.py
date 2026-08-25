@@ -127,8 +127,11 @@ class Session:
         self.pump_task = None
         self.paused = False
         if drain and pump_task is not None:
-            await stream.close()
-            await asyncio.wait_for(pump_task, DRAIN_TIMEOUT_SECONDS)
+            try:
+                await stream.close()
+                await asyncio.wait_for(pump_task, DRAIN_TIMEOUT_SECONDS)
+            except (ProviderResetError, ProviderAuthError, ConnectionClosed, OSError, TimeoutError):
+                pass
             return
         if pump_task is not None:
             pump_task.cancel()

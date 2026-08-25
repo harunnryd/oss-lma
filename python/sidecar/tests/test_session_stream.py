@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 from lma_pipeline import SegmentAssembler
@@ -148,6 +149,76 @@ class RaisingEngine:
     async def start(self, ctx):
         self.started_with.append(dict(ctx))
         return RaisingStream(self.exc)
+
+
+class HangingStream:
+    def __init__(self):
+        self.closed = False
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        await asyncio.sleep(3600)
+        raise StopAsyncIteration
+
+    async def close(self):
+        self.closed = True
+
+
+class HangingEngine:
+    def __init__(self):
+        self.started_with = []
+        self.stream = None
+
+    async def start(self, ctx):
+        self.started_with.append(dict(ctx))
+        self.stream = HangingStream()
+        return self.stream
+
+
+class RaiseOnCloseStream:
+    def __init__(self, exc: Exception):
+        self.exc = exc
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        raise StopAsyncIteration
+
+    async def close(self):
+        raise self.exc
+
+
+class RaiseOnCloseEngine:
+    def __init__(self, exc: Exception):
+        self.exc = exc
+        self.started_with = []
+
+    async def start(self, ctx):
+        self.started_with.append(dict(ctx))
+        return RaiseOnCloseStream(self.exc)
+
+
+async def test_drain_timeout_does_not_propagate_out_of_close_session(monkeypatch):
+    import sidecar.session as session_module
+
+    monkeypatch.setattr(session_module, "DRAIN_TIMEOUT_SECONDS", 0.01)
+    connection = MemoryConnection()
+    session = Session(connection, lambda ctx: HangingEngine())
+    await session.on_text(start_message())
+    await session.on_text(json.dumps({"EventType": "END", "CallId": CALL_ID}))
+    assert connection.open is True
+
+
+async def test_drain_close_provider_error_does_not_propagate_out_of_close_session():
+    connection = MemoryConnection()
+    session = Session(connection, lambda ctx: RaiseOnCloseEngine(ProviderResetError("boom")))
+    await session.on_text(start_message())
+    await eventually(lambda: session.pump_task is not None and session.pump_task.done())
+    await session.on_text(json.dumps({"EventType": "END", "CallId": CALL_ID}))
+    assert connection.open is True
 
 
 async def test_provider_reset_during_pump_sends_error_frame_and_ends_pump():
