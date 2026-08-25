@@ -1,3 +1,4 @@
+import asyncio
 from dataclasses import replace
 
 from lma_stt.types import (
@@ -75,6 +76,8 @@ class FakeResultStream:
         self._pending: list[Result] = []
         self._buffered: dict[str, list[WordItem]] = {}
         self._fired = 0
+        self._closed = False
+        self._new_item = asyncio.Event()
 
     async def feed(self, pcm: bytes) -> None:
         if len(pcm) != CHUNK_BYTES:
@@ -115,14 +118,20 @@ class FakeResultStream:
             self._pending.append(
                 {"result_id": result_id, "is_partial": True, "items": list(self._buffered[result_id])}
             )
+        self._new_item.set()
 
     async def close(self) -> None:
         self.engine.closed = True
+        self._closed = True
+        self._new_item.set()
 
     def __aiter__(self) -> "FakeResultStream":
         return self
 
     async def __anext__(self) -> Result:
-        if not self._pending:
-            raise StopAsyncIteration
+        while not self._pending:
+            if self._closed:
+                raise StopAsyncIteration
+            self._new_item.clear()
+            await self._new_item.wait()
         return self._pending.pop(0)

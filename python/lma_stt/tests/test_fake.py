@@ -19,8 +19,8 @@ def drain(chunks: int, **kwargs) -> list:
         stream = await engine.start(CTX)
         for _ in range(chunks):
             await stream.feed(b"\x00" * CHUNK_BYTES)
-        results = [item async for item in stream]
         await stream.close()
+        results = [item async for item in stream]
         return results
 
     return asyncio.run(run())
@@ -104,11 +104,9 @@ def test_reset_before_first_stage_emits_no_results():
     async def run():
         engine = FakeEngine(script=two_speaker_script(), reset_after_chunks=10)
         stream = await engine.start(CTX)
-        emitted = []
         with pytest.raises(ProviderResetError):
             for _ in range(10):
                 await stream.feed(b"\x00" * CHUNK_BYTES)
-                emitted.extend([item async for item in stream])
-        return emitted
+        return list(stream._pending)
 
     assert asyncio.run(run()) == []
