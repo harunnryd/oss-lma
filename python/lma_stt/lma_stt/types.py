@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import Literal, TypedDict
 
 
@@ -8,14 +9,15 @@ class MeetingContext(TypedDict):
     language_hints: list[str]
 
 
-class WordItem(TypedDict):
+@dataclass
+class WordItem:
     content: str
     type: Literal["pronunciation", "punctuation"]
     start_time: float
     end_time: float
     speaker: str | None
-    channel: Literal["CALLER", "AGENT"]
-    result_id: str
+    channel: Literal["CALLER", "AGENT"] | None = None
+    result_id: str | None = None
 
 
 class Result(TypedDict):

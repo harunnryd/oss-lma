@@ -41,8 +41,8 @@ def test_word_item_shape():
         "start_time": float,
         "end_time": float,
         "speaker": str | None,
-        "channel": Literal["CALLER", "AGENT"],
-        "result_id": str,
+        "channel": Literal["CALLER", "AGENT"] | None,
+        "result_id": str | None,
     }
 
 
