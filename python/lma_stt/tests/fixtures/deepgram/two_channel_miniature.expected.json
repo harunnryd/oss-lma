@@ -1,0 +1,33 @@
+[
+  {
+    "result_id": "req-mini-1-1",
+    "is_final": false,
+    "items": [
+      {"content": "lets", "type": "pronunciation", "start_time": 0.0, "end_time": 0.24, "speaker": null, "channel": "CALLER", "result_id": "req-mini-1-1"},
+      {"content": "review", "type": "pronunciation", "start_time": 0.28, "end_time": 0.72, "speaker": null, "channel": "CALLER", "result_id": "req-mini-1-1"},
+      {"content": "the", "type": "pronunciation", "start_time": 0.76, "end_time": 0.92, "speaker": null, "channel": "CALLER", "result_id": "req-mini-1-1"},
+      {"content": "numbers", "type": "pronunciation", "start_time": 0.96, "end_time": 1.44, "speaker": null, "channel": "CALLER", "result_id": "req-mini-1-1"}
+    ]
+  },
+  {
+    "result_id": "req-mini-1-1",
+    "is_final": true,
+    "items": [
+      {"content": "Let's", "type": "pronunciation", "start_time": 0.0, "end_time": 0.24, "speaker": "spk_0", "channel": "CALLER", "result_id": "req-mini-1-1"},
+      {"content": "review", "type": "pronunciation", "start_time": 0.28, "end_time": 0.72, "speaker": "spk_0", "channel": "CALLER", "result_id": "req-mini-1-1"},
+      {"content": "the", "type": "pronunciation", "start_time": 0.76, "end_time": 0.92, "speaker": "spk_0", "channel": "CALLER", "result_id": "req-mini-1-1"},
+      {"content": "numbers,", "type": "punctuation", "start_time": 0.96, "end_time": 1.44, "speaker": "spk_0", "channel": "CALLER", "result_id": "req-mini-1-1"}
+    ]
+  },
+  {
+    "result_id": "req-mini-1-2",
+    "is_final": true,
+    "items": [
+      {"content": "Sure", "type": "pronunciation", "start_time": 1.6, "end_time": 1.88, "speaker": "spk_1", "channel": "AGENT", "result_id": "req-mini-1-2"},
+      {"content": "I'm", "type": "pronunciation", "start_time": 1.92, "end_time": 2.08, "speaker": "spk_1", "channel": "AGENT", "result_id": "req-mini-1-2"},
+      {"content": "pulling", "type": "pronunciation", "start_time": 2.12, "end_time": 2.48, "speaker": "spk_1", "channel": "AGENT", "result_id": "req-mini-1-2"},
+      {"content": "them", "type": "pronunciation", "start_time": 2.52, "end_time": 2.68, "speaker": "spk_1", "channel": "AGENT", "result_id": "req-mini-1-2"},
+      {"content": "now.", "type": "punctuation", "start_time": 2.72, "end_time": 2.98, "speaker": "spk_1", "channel": "AGENT", "result_id": "req-mini-1-2"}
+    ]
+  }
+]
