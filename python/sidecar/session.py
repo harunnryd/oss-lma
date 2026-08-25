@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 from lma_pipeline import SegmentAssembler
 from lma_stt.types import MeetingContext, ProviderAuthError, ProviderResetError
@@ -23,6 +24,8 @@ from sidecar.frames import (
 
 DRAIN_TIMEOUT_SECONDS = 10.0
 THINKING_STEP_STUB_CONTENT = "agent unavailable in P1"
+
+logger = logging.getLogger(__name__)
 
 
 class Session:
@@ -141,6 +144,18 @@ class Session:
                 for event in assembler.on_result(result):
                     await self._send(event)
         except ConnectionClosed:
+            return
+        except ProviderAuthError:
+            logger.exception("stt provider auth error in pump for call %s", self.call_id)
+            await self._send(error_frame(self.call_id, "STT_PROVIDER_AUTH"))
+            return
+        except ProviderResetError:
+            logger.exception("stt provider reset error in pump for call %s", self.call_id)
+            await self._send(error_frame(self.call_id, "STT_STREAM_RESET"))
+            return
+        except Exception:
+            logger.exception("unexpected error in pump for call %s", self.call_id)
+            await self._send(error_frame(self.call_id, "STT_STREAM_RESET"))
             return
 
     async def _reject_invalid_frame(self) -> None:

@@ -1,7 +1,7 @@
 import json
 
 from lma_pipeline import SegmentAssembler
-from lma_stt.types import WordItem
+from lma_stt.types import ProviderResetError, WordItem
 
 from sidecar.frames import INVALID_FRAME_CLOSE_CODE, INVALID_FRAME_CODE, INVALID_FRAME_CONTEXT
 from sidecar.session import Session
@@ -124,3 +124,41 @@ async def test_schema_violation_triggers_invalid_frame_policy():
     await session.on_text(json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 4000}))
     await eventually(lambda: bool(connection.closes))
     assert connection.closes == [(1008, "invalid-frame")]
+
+
+class RaisingStream:
+    def __init__(self, exc: Exception):
+        self.exc = exc
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        raise self.exc
+
+    async def close(self):
+        pass
+
+
+class RaisingEngine:
+    def __init__(self, exc: Exception):
+        self.exc = exc
+        self.started_with = []
+
+    async def start(self, ctx):
+        self.started_with.append(dict(ctx))
+        return RaisingStream(self.exc)
+
+
+async def test_provider_reset_during_pump_sends_error_frame_and_ends_pump():
+    connection = MemoryConnection()
+    engine = RaisingEngine(ProviderResetError("upstream dropped"))
+    session = Session(connection, lambda ctx: engine)
+    await session.on_text(start_message())
+    await eventually(lambda: bool(connection.sent))
+    assert [json.loads(message) for message in connection.sent] == [{
+        "EventType": "ERROR",
+        "CallId": CALL_ID,
+        "Code": "STT_STREAM_RESET",
+    }]
+    await eventually(lambda: session.pump_task.done())
