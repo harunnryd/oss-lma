@@ -1,0 +1,29 @@
+[project]
+name = "oss-lma"
+version = "0.1.0"
+requires-python = ">=3.12"
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["python/sidecar", "python/lma_stt", "python/lma_pipeline"]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3",
+  "pytest-asyncio>=0.25",
+  "jsonschema>=4.23",
+  "pyyaml>=6.0",
+  "ruff>=0.9",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.pytest.ini_options]
+testpaths = ["python"]
+pythonpath = ["python/sidecar"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
