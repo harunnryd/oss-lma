@@ -1,7 +1,7 @@
 [
   {
     "result_id": "req-mini-1-1",
-    "is_final": false,
+    "is_partial": true,
     "items": [
       {"content": "lets", "type": "pronunciation", "start_time": 0.0, "end_time": 0.24, "speaker": null, "channel": "CALLER", "result_id": "req-mini-1-1"},
       {"content": "review", "type": "pronunciation", "start_time": 0.28, "end_time": 0.72, "speaker": null, "channel": "CALLER", "result_id": "req-mini-1-1"},
@@ -11,7 +11,7 @@
   },
   {
     "result_id": "req-mini-1-1",
-    "is_final": true,
+    "is_partial": false,
     "items": [
       {"content": "Let's", "type": "pronunciation", "start_time": 0.0, "end_time": 0.24, "speaker": "spk_0", "channel": "CALLER", "result_id": "req-mini-1-1"},
       {"content": "review", "type": "pronunciation", "start_time": 0.28, "end_time": 0.72, "speaker": "spk_0", "channel": "CALLER", "result_id": "req-mini-1-1"},
@@ -21,7 +21,7 @@
   },
   {
     "result_id": "req-mini-1-2",
-    "is_final": true,
+    "is_partial": false,
     "items": [
       {"content": "Sure", "type": "pronunciation", "start_time": 1.6, "end_time": 1.88, "speaker": "spk_1", "channel": "AGENT", "result_id": "req-mini-1-2"},
       {"content": "I'm", "type": "pronunciation", "start_time": 1.92, "end_time": 2.08, "speaker": "spk_1", "channel": "AGENT", "result_id": "req-mini-1-2"},

@@ -9,8 +9,8 @@ def test_loads_messages_and_expected_results_pair():
     assert messages[2]["metadata"]["sequence"] == 2
     assert len(expected) == 3
     assert expected[0]["result_id"] == "req-mini-1-1"
-    assert expected[0]["is_final"] is False
+    assert expected[0]["is_partial"] is True
     assert expected[1]["result_id"] == expected[0]["result_id"]
-    assert expected[1]["is_final"] is True
+    assert expected[1]["is_partial"] is False
     assert expected[2]["result_id"] == "req-mini-1-2"
-    assert all(i["channel"] == "AGENT" for i in expected[2]["items"])
+    assert all(i.channel == "AGENT" for i in expected[2]["items"])

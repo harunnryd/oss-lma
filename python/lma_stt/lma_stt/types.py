@@ -22,7 +22,7 @@ class WordItem:
 
 class Result(TypedDict):
     result_id: str
-    is_final: bool
+    is_partial: bool
     items: list[WordItem]
 
 

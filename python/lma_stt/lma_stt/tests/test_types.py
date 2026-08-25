@@ -26,15 +26,16 @@ def test_meeting_context_shape():
 
 
 def test_word_item_shape():
-    item: WordItem = {
-        "content": "budget",
-        "type": "pronunciation",
-        "start_time": 12.42,
-        "end_time": 12.88,
-        "speaker": "spk_1",
-        "channel": "CALLER",
-        "result_id": "r-0",
-    }
+    item = WordItem(
+        content="budget",
+        type="pronunciation",
+        start_time=12.42,
+        end_time=12.88,
+        speaker="spk_1",
+        channel="CALLER",
+        result_id="r-0",
+    )
+    assert item.content == "budget"
     assert WordItem.__annotations__ == {
         "content": str,
         "type": Literal["pronunciation", "punctuation"],
@@ -47,10 +48,10 @@ def test_word_item_shape():
 
 
 def test_result_shape():
-    result: Result = {"result_id": "r-0", "is_final": False, "items": []}
+    result: Result = {"result_id": "r-0", "is_partial": True, "items": []}
     assert Result.__annotations__ == {
         "result_id": str,
-        "is_final": bool,
+        "is_partial": bool,
         "items": list[WordItem],
     }
 

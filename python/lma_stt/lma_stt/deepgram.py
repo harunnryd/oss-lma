@@ -67,17 +67,17 @@ def map_message(message: dict) -> Result:
         if is_final and w.get("speaker") is not None:
             speaker = f"spk_{w['speaker']}"
         items.append(
-            {
-                "content": punctuated if punctuated else word,
-                "type": _word_type(word, punctuated),
-                "start_time": float(w["start"]),
-                "end_time": float(w["end"]),
-                "speaker": speaker,
-                "channel": channel,
-                "result_id": result_id,
-            }
+            WordItem(
+                content=punctuated if punctuated else word,
+                type=_word_type(word, punctuated),
+                start_time=float(w["start"]),
+                end_time=float(w["end"]),
+                speaker=speaker,
+                channel=channel,
+                result_id=result_id,
+            )
         )
-    return {"result_id": result_id, "is_final": is_final, "items": items}
+    return {"result_id": result_id, "is_partial": not is_final, "items": items}
 
 
 async def default_connect(url: str, headers: dict[str, str]) -> Any:

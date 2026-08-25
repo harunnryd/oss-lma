@@ -8,6 +8,7 @@ import websockets
 from websockets.asyncio.client import connect
 
 from lma_pipeline import SegmentAssembler
+from lma_stt.fake import FakeEngine, two_speaker_script
 from lma_stt.types import WordItem
 
 from sidecar.server import run_server
@@ -101,6 +102,44 @@ async def test_happy_path_streams_assembler_output_then_closes_cleanly(live_side
         await ws.close(code=1000)
         await pump
     assert received == expected
+
+
+async def test_real_fake_engine_streams_valid_segments_through_live_sidecar():
+    sink = io.StringIO()
+    stop = asyncio.Event()
+    task = asyncio.create_task(
+        run_server(lambda ctx: FakeEngine(script=two_speaker_script()), stop=stop, ready_sink=sink)
+    )
+    await eventually(lambda: "SIDECAR_READY" in sink.getvalue())
+    port = int(sink.getvalue().split("port=")[1].split()[0])
+    token = sink.getvalue().split("token=")[1].strip()
+    async with connect(url(port, token)) as ws:
+        received = []
+
+        async def reader():
+            try:
+                async for message in ws:
+                    received.append(json.loads(message))
+            except websockets.ConnectionClosed:
+                pass
+
+        pump = asyncio.create_task(reader())
+        await ws.send(json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000}))
+        chunk = sine_chunk(48000, 440, 880)
+        assert len(chunk) == CHUNK_BYTES
+        for _ in range(50):
+            await ws.send(chunk)
+        await eventually(lambda: len(received) > 0)
+        await ws.send(json.dumps({"EventType": "END", "CallId": CALL_ID}))
+        await asyncio.sleep(0.2)
+        await ws.close(code=1000)
+        await pump
+    assert received
+    for event in received:
+        assert event["EventType"] == "ADD_TRANSCRIPT_SEGMENT"
+        assert event["CallId"] == CALL_ID
+    stop.set()
+    await task
 
 
 async def test_invalid_text_frame_yields_error_then_close_1008(live_sidecar):

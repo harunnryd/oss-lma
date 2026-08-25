@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 from lma_stt.types import (
     MeetingContext,
     ProviderAuthError,
@@ -94,24 +96,24 @@ class FakeResultStream:
         result_id = stage["result_id"]
         base = (stage["at_chunk"] - len(stage["words"])) * 0.1
         for offset, word in enumerate(stage["words"]):
-            item: WordItem = {
-                "content": word,
-                "type": "pronunciation",
-                "start_time": round(base + offset * 0.1, 6),
-                "end_time": round(base + (offset + 1) * 0.1, 6),
-                "speaker": None,
-                "channel": stage["channel"],
-                "result_id": result_id,
-            }
+            item = WordItem(
+                content=word,
+                type="pronunciation",
+                start_time=round(base + offset * 0.1, 6),
+                end_time=round(base + (offset + 1) * 0.1, 6),
+                speaker=None,
+                channel=stage["channel"],
+                result_id=result_id,
+            )
             self._buffered.setdefault(result_id, []).append(item)
         if stage["final"]:
             items = self._buffered.pop(result_id)
             if stage.get("speaker"):
-                items = [{**item, "speaker": stage["speaker"]} for item in items]
-            self._pending.append({"result_id": result_id, "is_final": True, "items": items})
+                items = [replace(item, speaker=stage["speaker"]) for item in items]
+            self._pending.append({"result_id": result_id, "is_partial": False, "items": items})
         else:
             self._pending.append(
-                {"result_id": result_id, "is_final": False, "items": list(self._buffered[result_id])}
+                {"result_id": result_id, "is_partial": True, "items": list(self._buffered[result_id])}
             )
 
     async def close(self) -> None:

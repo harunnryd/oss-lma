@@ -29,9 +29,9 @@ def drain(chunks: int, **kwargs) -> list:
 def test_two_speaker_script_partial_then_final():
     results = drain(25, script=two_speaker_script())
     assert [r["result_id"] for r in results] == ["fake-r0", "fake-r0"]
-    assert [r["is_final"] for r in results] == [False, True]
+    assert [r["is_partial"] for r in results] == [True, False]
     partial = results[0]
-    assert [i["content"] for i in partial["items"]] == [
+    assert [i.content for i in partial["items"]] == [
         "can",
         "everyone",
         "see",
@@ -39,12 +39,12 @@ def test_two_speaker_script_partial_then_final():
         "updated",
         "forecast",
     ]
-    assert all(i["speaker"] is None for i in partial["items"])
-    assert all(i["channel"] == "CALLER" for i in partial["items"])
-    assert all(i["type"] == "pronunciation" for i in partial["items"])
-    assert [i["start_time"] for i in partial["items"]] == [1.4, 1.5, 1.6, 1.7, 1.8, 1.9]
-    assert [i["end_time"] for i in partial["items"]] == [1.5, 1.6, 1.7, 1.8, 1.9, 2.0]
-    assert {i["result_id"] for i in partial["items"]} == {"fake-r0"}
+    assert all(i.speaker is None for i in partial["items"])
+    assert all(i.channel == "CALLER" for i in partial["items"])
+    assert all(i.type == "pronunciation" for i in partial["items"])
+    assert [i.start_time for i in partial["items"]] == [1.4, 1.5, 1.6, 1.7, 1.8, 1.9]
+    assert [i.end_time for i in partial["items"]] == [1.5, 1.6, 1.7, 1.8, 1.9, 2.0]
+    assert {i.result_id for i in partial["items"]} == {"fake-r0"}
 
 
 def test_finals_carry_labels_for_whole_grouped_result():
@@ -53,8 +53,8 @@ def test_finals_carry_labels_for_whole_grouped_result():
     agent_partial = results[2]
     agent_final = results[3]
     assert len(caller_final["items"]) == 6
-    assert [i["speaker"] for i in caller_final["items"]] == ["spk_0"] * 6
-    assert [i["content"] for i in agent_partial["items"]] == [
+    assert [i.speaker for i in caller_final["items"]] == ["spk_0"] * 6
+    assert [i.content for i in agent_partial["items"]] == [
         "yes",
         "and",
         "the",
@@ -64,10 +64,10 @@ def test_finals_carry_labels_for_whole_grouped_result():
         "hiring",
         "delay",
     ]
-    assert all(i["speaker"] is None for i in agent_partial["items"])
-    assert all(i["channel"] == "AGENT" for i in agent_partial["items"])
-    assert [i["speaker"] for i in agent_final["items"]] == ["spk_1"] * 8
-    assert agent_final["items"][0]["start_time"] == 3.2
+    assert all(i.speaker is None for i in agent_partial["items"])
+    assert all(i.channel == "AGENT" for i in agent_partial["items"])
+    assert [i.speaker for i in agent_final["items"]] == ["spk_1"] * 8
+    assert agent_final["items"][0].start_time == 3.2
 
 
 def test_rejects_wrong_chunk_size():
