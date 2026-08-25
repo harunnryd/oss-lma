@@ -80,7 +80,9 @@ Every component is testable without the others; run from the repo root.
 | `cargo test -p app` | Tauri commands, parameterized writes on Rust-owned tables, reader half of WAL concurrency tests |
 | `cargo clippy --workspace --all-targets -- -D warnings` | lint gate |
 
-**Python workspace** (`uv sync` first):
+**Python workspace** (`uv sync --all-packages` first — plain `uv sync`
+does not install the workspace members `lma-stt` and `lma-pipeline` as
+editable installs, so cross-package imports fail on a fresh clone):
 
 | Command | Covers |
 |---|---|
