@@ -92,6 +92,26 @@ async def test_session_records_audio_when_recorder_provided(tmp_path):
         assert reader.getnframes() == 4800
 
 
+async def test_session_creates_recorder_when_record_meeting_true(tmp_path, monkeypatch):
+    monkeypatch.setenv("LMA_RECORDING_DIR", str(tmp_path / "recs"))
+    connection = MemoryConnection()
+    engine = ScriptedEngine([])
+    session = Session(
+        connection,
+        lambda ctx: engine,
+        record_meeting=True,
+    )
+    await session.on_text(json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000}))
+    assert session.recorder is not None
+    await session.on_binary(bytes(19200))
+    await session.on_text(json.dumps({"EventType": "END", "CallId": CALL_ID}))
+    import wave
+    wav_path = tmp_path / "recs" / CALL_ID / "audio.wav"
+    assert wav_path.exists()
+    with wave.open(str(wav_path), "rb") as reader:
+        assert reader.getframerate() == 48000
+
+
 async def test_session_default_db_is_noop():
     connection = MemoryConnection()
     engine = ScriptedEngine([])
