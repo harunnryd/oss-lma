@@ -22,7 +22,7 @@ from sidecar.frames import (
     serialize_event,
 )
 from sidecar.storage.persistence import PersistenceWriter
-from sidecar.storage.recording import RecordingSink
+from sidecar.storage.recording import RecordingSink, WavRecordingSink
 
 DRAIN_TIMEOUT_SECONDS = 10.0
 THINKING_STEP_STUB_CONTENT = "agent unavailable in P1"
@@ -38,11 +38,13 @@ class Session:
         *,
         db: PersistenceWriter | None = None,
         recorder: RecordingSink | None = None,
+        record_meeting: bool = False,
     ) -> None:
         self.connection = connection
         self.engine_factory = engine_factory
         self.db = db
         self.recorder = recorder
+        self.record_meeting = record_meeting
         self.call_id = ""
         self.stream = None
         self.assembler = None
@@ -132,6 +134,14 @@ class Session:
         self.stream = await engine.start(ctx)
         self.assembler = SegmentAssembler(frame.call_id)
         self.pump_task = asyncio.create_task(self._pump(self.stream, self.assembler))
+        if self.record_meeting and self.recorder is None:
+            import os
+            from pathlib import Path
+
+            base = Path(os.environ.get("LMA_RECORDING_DIR", str(Path.home() / "Library" / "Application Support" / "oss-lma" / "recordings")))
+            wav_path = base / frame.call_id / "audio.wav"
+            wav_path.parent.mkdir(parents=True, exist_ok=True)
+            self.recorder = WavRecordingSink(wav_path)
         if self.db is not None:
             self.db.write({"EventType": "START", "CallId": frame.call_id})
 
