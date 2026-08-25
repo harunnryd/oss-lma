@@ -54,7 +54,7 @@ def test_r7_worked_example_partial_to_final_stability():
                               is_partial=True, items=opening))
     assert [e["SegmentId"] for e in p1] == ["r7-CALLER-w0-r0"]
     assert p1[0]["IsPartial"] is True
-    assert p1[0]["Speaker"] is None
+    assert "Speaker" not in p1[0]
 
     p2 = asm.on_result(Result(result_id="r7", channel="CALLER",
                               is_partial=True,
@@ -64,7 +64,7 @@ def test_r7_worked_example_partial_to_final_stability():
         ("r7-CALLER-w0-r0", False),
         ("r7-CALLER-w1-r0", True),
     ]
-    assert all(e["Speaker"] is None for e in p2)
+    assert all("Speaker" not in e for e in p2)
 
     final = asm.on_result(Result(
         result_id="r7", channel="CALLER", is_partial=False,

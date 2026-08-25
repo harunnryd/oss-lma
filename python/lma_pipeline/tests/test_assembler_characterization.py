@@ -33,17 +33,19 @@ def period_b():
 
 
 def event(segment_id, speaker, start, end, text, partial):
-    return {
+    e = {
         "EventType": "ADD_TRANSCRIPT_SEGMENT",
         "CallId": "call-35",
         "SegmentId": segment_id,
         "Channel": "CALLER",
-        "Speaker": speaker,
         "StartTime": start,
         "EndTime": end,
         "Transcript": text,
         "IsPartial": partial,
     }
+    if speaker is not None:
+        e["Speaker"] = speaker
+    return e
 
 
 def test_thirty_five_second_two_turn_conversation_characterization():

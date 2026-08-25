@@ -76,7 +76,7 @@ def test_channel_without_any_active_speaker_declaration_stays_diarized_default()
     out = asm.on_result(result("re", [word("hello", 0.5, 0.8)],
                                channel="CALLER"))
     assert out[0]["SegmentId"] == "re-CALLER-w0-r0"
-    assert out[0]["Speaker"] is None
+    assert "Speaker" not in out[0]
 
 
 def test_labelled_result_flips_channel_to_diarized_permanently():

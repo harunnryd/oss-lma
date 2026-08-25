@@ -10,17 +10,19 @@ def word(content, start, end, speaker=None):
 
 
 def event(call_id, segment_id, channel, speaker, start, end, text, partial):
-    return {
+    e = {
         "EventType": "ADD_TRANSCRIPT_SEGMENT",
         "CallId": call_id,
         "SegmentId": segment_id,
         "Channel": channel,
-        "Speaker": speaker,
         "StartTime": start,
         "EndTime": end,
         "Transcript": text,
         "IsPartial": partial,
     }
+    if speaker is not None:
+        e["Speaker"] = speaker
+    return e
 
 
 def test_settled_window_emits_final_once_then_high_water_suppresses():

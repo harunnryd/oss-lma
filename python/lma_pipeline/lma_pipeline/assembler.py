@@ -105,17 +105,19 @@ class SegmentAssembler:
     def _snapshot(self, state: dict, segment_id: str, channel: str,
                   is_partial: bool) -> dict:
         entry = state["open"][segment_id]
-        return {
+        event = {
             "EventType": "ADD_TRANSCRIPT_SEGMENT",
             "CallId": self.call_id,
             "SegmentId": segment_id,
             "Channel": channel,
-            "Speaker": entry["speaker"],
             "StartTime": entry["start"],
             "EndTime": entry["end"],
             "Transcript": self._transcript(entry["items"]),
             "IsPartial": is_partial,
         }
+        if entry["speaker"] is not None:
+            event["Speaker"] = entry["speaker"]
+        return event
 
     def _emit_active_speaker(self, result: Result, state: dict) -> list[dict]:
         self._apply_pending_speaker(result, state)
@@ -188,18 +190,20 @@ class SegmentAssembler:
                         partial = window["index"] == highest_emit
                     else:
                         partial = False
-                    out.append({
+                    event = {
                         "EventType": "ADD_TRANSCRIPT_SEGMENT",
                         "CallId": self.call_id,
                         "SegmentId": (f"{result['result_id']}-{result['channel']}"
                                       f"-w{window['index']}-r{position}"),
                         "Channel": result["channel"],
-                        "Speaker": run["label"],
                         "StartTime": run["start"],
                         "EndTime": run["end"],
                         "Transcript": self._transcript(run["items"]),
                         "IsPartial": partial,
-                    })
+                    }
+                    if run["label"] is not None:
+                        event["Speaker"] = run["label"]
+                    out.append(event)
         return out
 
     def _refresh(self, run: dict) -> None:
