@@ -1,4 +1,11 @@
+import asyncio
+import json
 from dataclasses import dataclass
+from typing import Any
+
+from lma_stt.types import ProviderResetError, Result, WordItem
+
+_PUNCTUATION_SUFFIXES = (",", ".", "!", "?", ";", ":")
 
 
 @dataclass
@@ -26,3 +33,77 @@ def build_url(cfg: DeepgramConfig) -> str:
         params.append(("endpointing", str(cfg.endpointing_ms)))
     query = "&".join(f"{key}={value}" for key, value in params)
     return f"wss://api.deepgram.com/v1/listen?{query}"
+
+
+def _word_type(word: str, punctuated_word: str | None) -> str:
+    if punctuated_word and punctuated_word != word and punctuated_word.endswith(_PUNCTUATION_SUFFIXES):
+        return "punctuation"
+    return "pronunciation"
+
+
+def map_message(message: dict) -> Result:
+    metadata = message["metadata"]
+    result_id = f"{metadata['request_id']}-{metadata['sequence']}"
+    is_final = bool(message["is_final"])
+    channel = "CALLER" if message["channel_index"][0] == 0 else "AGENT"
+    items: list[WordItem] = []
+    for w in message["channel"]["alternatives"][0]["words"]:
+        word = w["word"]
+        punctuated = w.get("punctuated_word")
+        speaker = None
+        if is_final and w.get("speaker") is not None:
+            speaker = f"spk_{w['speaker']}"
+        items.append(
+            {
+                "content": punctuated if punctuated else word,
+                "type": _word_type(word, punctuated),
+                "start_time": float(w["start"]),
+                "end_time": float(w["end"]),
+                "speaker": speaker,
+                "channel": channel,
+                "result_id": result_id,
+            }
+        )
+    return {"result_id": result_id, "is_final": is_final, "items": items}
+
+
+class DeepgramResultStream:
+    def __init__(self, conn: Any):
+        self.conn = conn
+        self.last_audio_at = 0.0
+        self.keepalive_task = None
+        self._closing = False
+
+    async def feed(self, pcm: bytes) -> None:
+        await self.conn.send(pcm)
+
+    async def close(self) -> None:
+        if self._closing:
+            return
+        self._closing = True
+        try:
+            await self.conn.send(json.dumps({"type": "CloseStream"}))
+        finally:
+            await self.conn.close()
+
+    def __aiter__(self) -> "DeepgramResultStream":
+        return self
+
+    async def __anext__(self) -> Result:
+        while True:
+            if self._closing:
+                raise StopAsyncIteration
+            try:
+                raw = await self.conn.recv()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                raise ProviderResetError(f"{type(exc).__name__}: {exc}") from exc
+            if isinstance(raw, bytes):
+                continue
+            message = json.loads(raw)
+            kind = message.get("type")
+            if kind == "Results":
+                return map_message(message)
+            if kind == "Error":
+                raise ProviderResetError(str(message.get("description", "provider error frame")))
