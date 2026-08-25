@@ -142,10 +142,15 @@ class SegmentAssembler:
             label = item.speaker
             if runs:
                 current = runs[-1]
-                if label is None or current["label"] == label:
-                    current["items"].append(item)
-                    continue
-                if current["label"] is None:
+                last_end = current["items"][-1].end_time
+                gap = item.start_time - last_end
+                same_label = label is not None and current["label"] == label
+                time_split = same_label and gap > 0.25
+                if label is None or same_label:
+                    if not time_split:
+                        current["items"].append(item)
+                        continue
+                elif current["label"] is None:
                     current["label"] = label
                     current["items"].append(item)
                     continue
