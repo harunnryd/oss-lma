@@ -1,6 +1,8 @@
 import asyncio
 import io
+import math
 import re
+import struct
 import time
 
 READY_LINE = re.compile(r"^SIDECAR_READY port=(?P<port>\d+) token=(?P<token>[0-9a-f]{32})\n$")
@@ -69,6 +71,16 @@ async def eventually(predicate, timeout: float = 2.0) -> None:
             return
         await asyncio.sleep(0.01)
     raise AssertionError("condition not met before timeout")
+
+
+def sine_chunk(sample_rate: int, caller_freq: int, agent_freq: int) -> bytes:
+    count = int(sample_rate * 0.1)
+    frames = bytearray()
+    for i in range(count):
+        left = int(2000 * math.sin(2 * math.pi * caller_freq * i / sample_rate))
+        right = int(2000 * math.sin(2 * math.pi * agent_freq * i / sample_rate))
+        frames += struct.pack("<hh", left, right)
+    return bytes(frames)
 
 
 async def spawn_sidecar(engine_factory):
