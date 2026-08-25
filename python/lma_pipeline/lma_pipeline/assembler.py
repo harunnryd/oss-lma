@@ -55,14 +55,87 @@ class SegmentAssembler:
         return [(index, grouped[index]) for index in sorted(grouped)]
 
     def on_result(self, result: Result) -> list[dict]:
-        state = self._state(result["channel"])
         if not result["items"]:
             return []
+        channel = (result.get("channel") if result.get("channel") is not None
+                   else result["items"][0].channel)
+        result = {**result, "channel": channel}
+        state = self._state(channel)
+        if any(item.speaker is not None for item in result["items"]):
+            state["diarized"] = True
         if state["result_id"] != result["result_id"]:
             state["result_id"] = result["result_id"]
             state["origin"] = None
             state["settled_emitted"] = 0
+        use_fallback = not state["diarized"] and (
+            state["pending_speaker"] is not None or bool(state["timeline"]))
+        if use_fallback:
+            return self._emit_active_speaker(result, state)
         return self._emit_diarized(result, state)
+
+    def _first_pronunciation_start(self, items: list[WordItem]) -> float | None:
+        for item in items:
+            if item.type == "pronunciation":
+                return item.start_time
+        return None
+
+    def _apply_pending_speaker(self, result: Result, state: dict) -> None:
+        pending = state["pending_speaker"]
+        if pending is None:
+            return
+        timeline = state["timeline"]
+        if timeline and timeline[-1][1] == pending:
+            state["pending_speaker"] = None
+            return
+        stamp = self._first_pronunciation_start(result["items"])
+        if stamp is None:
+            return
+        base = stamp if not timeline else max(stamp, timeline[-1][0])
+        timeline.append((base, pending))
+        state["pending_speaker"] = None
+
+    def _bin(self, state: dict, item: WordItem) -> tuple[str, float]:
+        speaker, start = "unknown", item.start_time
+        for entry_start, name in state["timeline"]:
+            if entry_start > item.start_time:
+                break
+            speaker, start = name, entry_start
+        return speaker, start
+
+    def _snapshot(self, state: dict, segment_id: str, channel: str,
+                  is_partial: bool) -> dict:
+        entry = state["open"][segment_id]
+        return {
+            "EventType": "ADD_TRANSCRIPT_SEGMENT",
+            "CallId": self.call_id,
+            "SegmentId": segment_id,
+            "Channel": channel,
+            "Speaker": entry["speaker"],
+            "StartTime": entry["start"],
+            "EndTime": entry["end"],
+            "Transcript": self._transcript(entry["items"]),
+            "IsPartial": is_partial,
+        }
+
+    def _emit_active_speaker(self, result: Result, state: dict) -> list[dict]:
+        self._apply_pending_speaker(result, state)
+        touched: list[str] = []
+        for item in result["items"]:
+            speaker, start = self._bin(state, item)
+            segment_id = f"{speaker}-{round(start * 1000)}-{result['channel']}"
+            entry = state["open"].get(segment_id)
+            if entry is None:
+                state["open"][segment_id] = {"speaker": speaker, "start": start,
+                                             "end": item.end_time,
+                                             "items": [item]}
+            elif item not in entry["items"]:
+                entry["items"].append(item)
+                entry["end"] = item.end_time
+            if segment_id not in touched:
+                touched.append(segment_id)
+        return [self._snapshot(state, segment_id, result["channel"],
+                               result["is_partial"])
+                for segment_id in touched]
 
     def _select(self, windows: list[dict], is_partial: bool,
                 settled_emitted: int) -> tuple[list[dict], int]:
