@@ -221,6 +221,47 @@ async def test_drain_close_provider_error_does_not_propagate_out_of_close_sessio
     assert connection.open is True
 
 
+class SizeMismatchStream:
+    def __init__(self):
+        self.fed = []
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        raise StopAsyncIteration
+
+    async def feed(self, pcm):
+        raise ValueError(f"provider expected a different chunk size, got {len(pcm)}")
+
+    async def close(self):
+        pass
+
+
+class SizeMismatchEngine:
+    def __init__(self):
+        self.started_with = []
+
+    async def start(self, ctx):
+        self.started_with.append(dict(ctx))
+        return SizeMismatchStream()
+
+
+async def test_provider_side_chunk_size_mismatch_is_handled_gracefully():
+    connection = MemoryConnection()
+    session = Session(connection, lambda ctx: SizeMismatchEngine())
+    await session.on_text(start_message())
+    await session.on_binary(bytes(19200))
+    await eventually(lambda: bool(connection.closes))
+    assert [json.loads(message) for message in connection.sent] == [{
+        "EventType": "ERROR",
+        "CallId": CALL_ID,
+        "Code": INVALID_FRAME_CODE,
+        "Context": INVALID_FRAME_CONTEXT,
+    }]
+    assert connection.closes == [(INVALID_FRAME_CLOSE_CODE, "invalid-frame")]
+
+
 async def test_provider_reset_during_pump_sends_error_frame_and_ends_pump():
     connection = MemoryConnection()
     engine = RaisingEngine(ProviderResetError("upstream dropped"))

@@ -80,6 +80,19 @@ def test_rejects_wrong_chunk_size():
         asyncio.run(run())
 
 
+def test_chunk_size_derives_from_context_sample_rate():
+    async def run():
+        engine = FakeEngine(script=[])
+        ctx = {**CTX, "sample_rate": 16000}
+        stream = await engine.start(ctx)
+        assert stream.chunk_bytes == 6400
+        await stream.feed(b"\x00" * 6400)
+        with pytest.raises(ValueError):
+            await stream.feed(b"\x00" * CHUNK_BYTES)
+
+    asyncio.run(run())
+
+
 def test_auth_failure_raises_on_start():
     async def run():
         engine = FakeEngine(script=[], auth_failure=True)

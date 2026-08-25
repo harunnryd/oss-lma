@@ -93,7 +93,10 @@ class Session:
             return
         if self.paused:
             return
-        await self.stream.feed(pcm)
+        try:
+            await self.stream.feed(pcm)
+        except ValueError:
+            await self._reject_invalid_frame()
 
     async def shutdown(self) -> None:
         await self._close_session(drain=False)

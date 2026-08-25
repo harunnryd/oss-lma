@@ -66,12 +66,13 @@ class FakeEngine:
         if self.auth_failure:
             raise ProviderAuthError("scripted auth failure")
         self.started_ctx = ctx
-        return FakeResultStream(self)
+        return FakeResultStream(self, ctx["sample_rate"] * 4 // 10)
 
 
 class FakeResultStream:
-    def __init__(self, engine: FakeEngine):
+    def __init__(self, engine: FakeEngine, chunk_bytes: int = CHUNK_BYTES):
         self.engine = engine
+        self.chunk_bytes = chunk_bytes
         self.chunk_count = 0
         self._pending: list[Result] = []
         self._buffered: dict[str, list[WordItem]] = {}
@@ -80,8 +81,8 @@ class FakeResultStream:
         self._new_item = asyncio.Event()
 
     async def feed(self, pcm: bytes) -> None:
-        if len(pcm) != CHUNK_BYTES:
-            raise ValueError(f"expected {CHUNK_BYTES}-byte stereo s16le chunk, got {len(pcm)}")
+        if len(pcm) != self.chunk_bytes:
+            raise ValueError(f"expected {self.chunk_bytes}-byte stereo s16le chunk, got {len(pcm)}")
         self.chunk_count += 1
         if (
             self.engine.reset_after_chunks is not None
