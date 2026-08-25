@@ -8,18 +8,21 @@ from sidecar.frames import (
     INVALID_FRAME_CLOSE_CODE,
     INVALID_FRAME_CODE,
     INVALID_FRAME_CONTEXT,
+    AgentQuery,
     End,
     FrameError,
     Pause,
     Resume,
     SpeakerChange,
     Start,
+    VpCommand,
     error_frame,
     parse_frame,
     serialize_event,
 )
 
 DRAIN_TIMEOUT_SECONDS = 10.0
+THINKING_STEP_STUB_CONTENT = "agent unavailable in P1"
 
 
 class Session:
@@ -64,6 +67,17 @@ class Session:
                     self.paused = False
             case End():
                 await self._close_session(drain=True)
+            case AgentQuery():
+                await self._send({
+                    "EventType": "THINKING_STEP",
+                    "CallId": frame.call_id,
+                    "QueryId": frame.query_id,
+                    "Seq": 0,
+                    "StepType": "status",
+                    "Content": THINKING_STEP_STUB_CONTENT,
+                })
+            case VpCommand():
+                pass
             case _:
                 pass
 
