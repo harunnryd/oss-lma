@@ -1,5 +1,11 @@
 import wave
 from pathlib import Path
+from typing import Protocol
+
+
+class RecordingSink(Protocol):
+    def feed(self, pcm: bytes) -> None: ...
+    def stop(self) -> None: ...
 
 
 class NullRecordingSink:
