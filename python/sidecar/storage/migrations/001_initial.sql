@@ -105,3 +105,38 @@ CREATE INDEX idx_vp_tasks_state_started_at
 
 CREATE INDEX idx_vp_tasks_schedule_id
   ON vp_tasks (schedule_id);
+
+CREATE TABLE agent_assists (
+  segment_id          TEXT PRIMARY KEY,
+  meeting_id          TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+  transcript          TEXT NOT NULL,
+  is_partial          INTEGER NOT NULL CHECK (is_partial IN (0, 1)),
+  trigger_segment_id  TEXT REFERENCES segments(segment_id) ON DELETE SET NULL
+);
+
+CREATE INDEX idx_agent_assists_meeting_id
+  ON agent_assists (meeting_id);
+
+CREATE TABLE agent_tokens (
+  query_id    TEXT NOT NULL,
+  meeting_id  TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+  seq         INTEGER NOT NULL,
+  delta       TEXT NOT NULL,
+  PRIMARY KEY (query_id, seq)
+);
+
+CREATE INDEX idx_agent_tokens_meeting_id
+  ON agent_tokens (meeting_id);
+
+CREATE TABLE thinking_steps (
+  query_id     TEXT NOT NULL,
+  meeting_id   TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+  seq          INTEGER NOT NULL,
+  step_type    TEXT NOT NULL
+                       CHECK (step_type IN ('reasoning', 'tool_use', 'tool_result', 'status')),
+  content      TEXT,
+  PRIMARY KEY (query_id, seq)
+);
+
+CREATE INDEX idx_thinking_steps_meeting_id
+  ON thinking_steps (meeting_id);
