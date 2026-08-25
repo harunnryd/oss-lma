@@ -26,7 +26,7 @@ line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint]
-per-file-ignores = { "**/tests/**/*.py" = ["F841", "I001"] }
+per-file-ignores = { "**/tests/**/*.py" = ["F841", "I001", "B017"] }
 
 [tool.pytest.ini_options]
 testpaths = ["python"]
