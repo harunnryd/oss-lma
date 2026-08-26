@@ -1,4 +1,5 @@
 import sqlite3
+import time
 
 from sidecar.storage.writer_boundary import (
     normalize_agent_assist,
@@ -88,6 +89,31 @@ def write_thinking_step(conn: sqlite3.Connection, ev: dict) -> None:
         "(query_id, meeting_id, seq, step_type, content) VALUES (?, ?, ?, ?, ?)",
         values,
     )
+    conn.commit()
+
+
+def write_meeting_failed(conn, ev):
+    ended_at = int(time.time() * 1000)
+    conn.execute(
+        "UPDATE meetings SET status = 'FAILED', ended_at = ?, last_reconnect_at = ? "
+        "WHERE id = ?",
+        (ended_at, ended_at, ev["CallId"]),
+    )
+    conn.commit()
+
+
+def write_meeting_started_update_offset(conn, ev, *, time_offset_ms, reconnect_attempts=None):
+    if reconnect_attempts is None:
+        conn.execute(
+            "UPDATE meetings SET time_offset_ms = ? WHERE id = ?",
+            (time_offset_ms, ev["CallId"]),
+        )
+    else:
+        conn.execute(
+            "UPDATE meetings SET time_offset_ms = ?, reconnect_attempts = ?, "
+            "last_reconnect_at = ? WHERE id = ?",
+            (time_offset_ms, reconnect_attempts, int(time.time() * 1000), ev["CallId"]),
+        )
     conn.commit()
 
 

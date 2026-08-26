@@ -197,3 +197,29 @@ def test_write_meeting_started_returns_offset_when_requested(tmp_path):
         return_offset=True,
     )
     assert offset == 4321
+
+
+def test_write_meeting_failed_sets_status_and_ended_at(tmp_path):
+    from sidecar.storage.writers import write_meeting_failed
+
+    conn = _bootstrap(tmp_path)
+    write_meeting_started(conn, {"EventType": "START", "CallId": "m-1", "SamplingRate": 48000})
+    write_meeting_failed(conn, {"EventType": "FAILED", "CallId": "m-1", "Reason": "test"})
+    row = conn.execute("SELECT status, ended_at FROM meetings WHERE id = 'm-1'").fetchone()
+    assert row["status"] == "FAILED"
+    assert row["ended_at"] is not None and row["ended_at"] > 0
+
+
+def test_write_meeting_started_update_offset_updates_time_offset(tmp_path):
+    from sidecar.storage.writers import write_meeting_started_update_offset
+
+    conn = _bootstrap(tmp_path)
+    write_meeting_started(conn, {"EventType": "START", "CallId": "m-1", "SamplingRate": 48000})
+    write_meeting_started_update_offset(
+        conn, {"EventType": "START", "CallId": "m-1"}, time_offset_ms=9999, reconnect_attempts=2
+    )
+    row = conn.execute(
+        "SELECT time_offset_ms, reconnect_attempts FROM meetings WHERE id = 'm-1'"
+    ).fetchone()
+    assert row["time_offset_ms"] == 9999
+    assert row["reconnect_attempts"] == 2
