@@ -11,7 +11,7 @@ def _storage_root() -> Path:
 def test_initial_migration_creates_all_python_owned_tables(tmp_path):
     conn = open_db(tmp_path / "lma.db")
     applied = apply_migrations(conn, _storage_root() / "migrations")
-    assert applied == [1, 2]
+    assert applied == [1, 2, 3]
 
     table_names = {
         row["name"]
@@ -38,7 +38,7 @@ def test_initial_migration_is_idempotent(tmp_path):
     conn = open_db(tmp_path / "lma.db")
     first = apply_migrations(conn, _storage_root() / "migrations")
     second = apply_migrations(conn, _storage_root() / "migrations")
-    assert first == [1, 2]
+    assert first == [1, 2, 3]
     assert second == []
 
 
@@ -79,3 +79,12 @@ def test_second_migration_allows_negative_is_partial(tmp_path):
     )
     row = conn.execute("SELECT is_partial FROM segments").fetchone()
     assert row["is_partial"] == -1
+
+
+def test_third_migration_adds_reconnect_columns(tmp_path):
+    conn = open_db(tmp_path / "lma.db")
+    apply_migrations(conn, _storage_root() / "migrations")
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(meetings)").fetchall()}
+    assert "time_offset_ms" in cols
+    assert "reconnect_attempts" in cols
+    assert "last_reconnect_at" in cols
