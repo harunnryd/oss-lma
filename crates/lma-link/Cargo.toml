@@ -1,0 +1,10 @@
+[package]
+name = "lma-link"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+lma-capture = { path = "../lma-capture" }
+
+[lib]
+path = "src/lib.rs"
