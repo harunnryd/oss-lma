@@ -1,3 +1,9 @@
+pub mod mixer;
+pub mod recorder;
+
+pub use mixer::{Mixer, SourceChannel};
+pub use recorder::WavRecorder;
+
 /// A fixed-duration interleaved stereo PCM audio chunk.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StereoChunk {
