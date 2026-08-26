@@ -1,3 +1,7 @@
+from pathlib import Path
+
+from sidecar.storage.connection import open_db
+from sidecar.storage.migrations import apply_migrations
 from sidecar.storage.writer_boundary import (
     normalize_meeting_started,
     normalize_meeting_ended,
@@ -183,3 +187,25 @@ def test_float_to_ms_rounds_half_to_even():
     assert _float_seconds_to_ms(12.5) == 12500
     assert _float_seconds_to_ms(0.001) == 1
     assert _float_seconds_to_ms(0.0005) in (0, 1)
+
+
+def test_normalize_meeting_started_with_return_offset_reads_existing(tmp_path):
+    conn = open_db(tmp_path / "lma.db")
+    apply_migrations(conn, Path(__file__).resolve().parents[1] / "storage" / "migrations")
+    conn.execute(
+        "INSERT INTO meetings (id, source, started_at, time_offset_ms) VALUES (?, ?, ?, ?)",
+        ("m-1", "LOCAL", 1700000000000, 12345),
+    )
+    conn.commit()
+    _value, offset = normalize_meeting_started(
+        {"EventType": "START", "CallId": "m-1", "SamplingRate": 48000},
+        conn=conn,
+        return_offset=True,
+    )
+    assert offset == 12345
+
+
+def test_normalize_meeting_started_default_returns_single_tuple():
+    from sidecar.storage.writer_boundary import normalize_meeting_started as f
+    result = f({"EventType": "START", "CallId": "m-1", "SamplingRate": 48000})
+    assert isinstance(result, tuple) and len(result) == 3
