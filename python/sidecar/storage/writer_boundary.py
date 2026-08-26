@@ -19,11 +19,23 @@ def _parse_iso_to_ms(value: str | None) -> int | None:
     return int(parsed.timestamp() * 1000)
 
 
-def normalize_meeting_started(ev: dict) -> tuple:
+def normalize_meeting_started(
+    ev: dict,
+    *,
+    conn=None,
+    return_offset: bool = False,
+) -> tuple:
     started_at = _parse_iso_to_ms(ev.get("CreatedAt"))
     if started_at is None:
         started_at = int(time.time() * 1000)
-    return (ev["CallId"], "LOCAL", started_at)
+    base = (ev["CallId"], "LOCAL", started_at)
+    if not return_offset or conn is None:
+        return base
+    row = conn.execute(
+        "SELECT time_offset_ms FROM meetings WHERE id = ?", (ev["CallId"],)
+    ).fetchone()
+    offset = row["time_offset_ms"] if row else 0
+    return base, offset
 
 
 def normalize_meeting_ended(ev: dict) -> tuple:
@@ -33,17 +45,22 @@ def normalize_meeting_ended(ev: dict) -> tuple:
     return (ev["CallId"], "COMPLETED", ended_at)
 
 
-def normalize_segment(ev: dict) -> tuple:
+def normalize_segment(ev: dict, *, time_offset_ms: int = 0) -> tuple:
     speaker = ev.get("Speaker")
     if speaker == "":
         speaker = None
+    start_ms = _float_seconds_to_ms(ev["StartTime"])
+    end_ms = _float_seconds_to_ms(ev["EndTime"])
+    if time_offset_ms:
+        start_ms += time_offset_ms
+        end_ms += time_offset_ms
     return (
         ev["SegmentId"],
         ev["CallId"],
         ev["Channel"],
         speaker,
-        _float_seconds_to_ms(ev["StartTime"]),
-        _float_seconds_to_ms(ev["EndTime"]),
+        start_ms,
+        end_ms,
         ev["Transcript"],
         ev["Transcript"],
         _bool_to_int(ev["IsPartial"]),
