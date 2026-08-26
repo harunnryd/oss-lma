@@ -1,3 +1,4 @@
+import os
 import signal
 import subprocess
 import sys
@@ -30,6 +31,27 @@ def test_subprocess_prints_ready_line_then_shuts_down_on_sigterm():
         line = proc.stdout.readline()
         match = READY_LINE.fullmatch(line)
         assert match is not None
+        proc.send_signal(signal.SIGTERM)
+        assert proc.wait(timeout=10) == 0
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def test_entrypoint_runs_stale_partial_sweep_on_startup(tmp_path, monkeypatch):
+    monkeypatch.setenv("LMA_DB_PATH", str(tmp_path / "lma.db"))
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "sidecar"],
+        cwd=PYTHON_DIR,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env={**os.environ, "LMA_DB_PATH": str(tmp_path / "lma.db")},
+        text=True,
+    )
+    try:
+        line = proc.stdout.readline()
+        assert READY_LINE.fullmatch(line) is not None
         proc.send_signal(signal.SIGTERM)
         assert proc.wait(timeout=10) == 0
     finally:

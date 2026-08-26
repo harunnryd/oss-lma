@@ -8,6 +8,7 @@ from lma_stt.fake import FakeEngine
 
 from sidecar.server import BindFailed, run_server
 from sidecar.storage.connection import open_db
+from sidecar.storage.crash_recovery import sweep_stale_partials
 from sidecar.storage.migrations import apply_migrations
 from sidecar.storage.persistence import SqliteWriter
 
@@ -45,6 +46,10 @@ async def main() -> int:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = open_db(db_path)
     apply_migrations(conn, Path(__file__).resolve().parent / "storage" / "migrations")
+    marked = sweep_stale_partials(conn)
+    if marked > 0:
+        import sys
+        print(f"recovered {marked} stale partial(s) from previous run", file=sys.stderr, flush=True)
     writer = SqliteWriter(conn)
     record_enabled = _record_meeting_enabled()
 
