@@ -176,21 +176,20 @@ impl SourceHandle {
     }
 
     pub fn stop(&mut self) -> Result<(), String> {
-        if let Some(stream) = self.stream.as_mut() {
+        if let Some(mut stream) = self.stream.take() {
             if let Err(error) = stream.stop() {
                 let _ = self
                     .events
                     .send(SourceEvent::Error(self.kind, error.clone()));
                 return Err(error);
             }
-            self.stream.take();
             let _ = self.events.send(SourceEvent::Stopped(self.kind));
         }
         Ok(())
     }
 
     pub fn rebuild(&mut self, selection: DeviceSelection) -> Result<(), String> {
-        self.stop()?;
+        let _ = self.stop();
         match self.provider.start(
             self.kind,
             &selection,
@@ -378,11 +377,55 @@ mod tests {
 
         assert_eq!(handle.stop().unwrap_err(), "native stop failed");
 
-        assert!(handle.is_active());
+        assert!(!handle.is_active());
         assert_eq!(
             events_rx.recv().unwrap(),
             SourceEvent::Error(SourceKind::System, "native stop failed".into())
         );
         assert!(events_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn rebuild_starts_a_new_stream_after_native_stop_fails() {
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let provider = FakeStreams {
+            actions: actions.clone(),
+            observers: Rc::new(RefCell::new(Vec::new())),
+            stop_error: Some("native stop failed".into()),
+        };
+        let (frames_tx, _frames_rx) = mpsc::channel();
+        let (events_tx, events_rx) = mpsc::channel();
+        let source = MacSource::with_provider(SourceKind::Microphone, provider, events_tx);
+        let mut handle = source.start(DeviceSelection::Default, frames_tx);
+        assert_eq!(
+            events_rx.recv().unwrap(),
+            SourceEvent::Started(SourceKind::Microphone)
+        );
+        actions.borrow_mut().clear();
+
+        handle
+            .rebuild(DeviceSelection::DeviceId("replacement-mic".into()))
+            .unwrap();
+
+        assert!(handle.is_active());
+        assert_eq!(
+            *actions.borrow(),
+            [
+                (SourceKind::Microphone, "stop", DeviceSelection::Default),
+                (
+                    SourceKind::Microphone,
+                    "start",
+                    DeviceSelection::DeviceId("replacement-mic".into())
+                )
+            ]
+        );
+        assert_eq!(
+            events_rx.recv().unwrap(),
+            SourceEvent::Error(SourceKind::Microphone, "native stop failed".into())
+        );
+        assert_eq!(
+            events_rx.recv().unwrap(),
+            SourceEvent::Started(SourceKind::Microphone)
+        );
     }
 }

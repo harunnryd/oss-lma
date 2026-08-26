@@ -1,8 +1,16 @@
-use std::{sync::mpsc, time::Duration};
+use std::{
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    time::Duration,
+};
 
 use cidre::{av, blocks, cg, ns};
 
 use crate::PermissionState;
+
+static SCREEN_REQUEST_DENIED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PermissionKind {
@@ -29,9 +37,10 @@ pub struct NativePermissions;
 impl PermissionProvider for NativePermissions {
     fn status(&self, kind: PermissionKind) -> NativeAuthorization {
         match kind {
-            PermissionKind::ScreenRecording => {
-                screen_authorization(cg::screen_capture_access::preflight())
-            }
+            PermissionKind::ScreenRecording => screen_authorization(
+                cg::screen_capture_access::preflight(),
+                SCREEN_REQUEST_DENIED.load(Ordering::Acquire),
+            ),
             PermissionKind::Microphone => {
                 let status =
                     av::CaptureDevice::authorization_status_for_media_type(av::MediaType::audio());
@@ -49,11 +58,15 @@ impl PermissionProvider for NativePermissions {
 
     fn request(&self, kind: PermissionKind) -> Result<NativeAuthorization, String> {
         match kind {
-            PermissionKind::ScreenRecording => Ok(if cg::screen_capture_access::request() {
-                NativeAuthorization::Authorized
-            } else {
-                NativeAuthorization::Denied
-            }),
+            PermissionKind::ScreenRecording => {
+                let granted = cg::screen_capture_access::request();
+                SCREEN_REQUEST_DENIED.store(!granted, Ordering::Release);
+                Ok(if granted {
+                    NativeAuthorization::Authorized
+                } else {
+                    NativeAuthorization::Denied
+                })
+            }
             PermissionKind::Microphone => {
                 let (sender, receiver) = mpsc::sync_channel(1);
                 let mut completion = blocks::SendBlock::new1(move |granted: bool| {
@@ -93,9 +106,14 @@ impl PermissionProvider for NativePermissions {
     }
 }
 
-fn screen_authorization(preflight_granted: bool) -> NativeAuthorization {
+fn screen_authorization(
+    preflight_granted: bool,
+    previous_request_was_denied: bool,
+) -> NativeAuthorization {
     if preflight_granted {
         NativeAuthorization::Authorized
+    } else if previous_request_was_denied {
+        NativeAuthorization::Denied
     } else {
         NativeAuthorization::NotDetermined
     }
@@ -242,8 +260,16 @@ mod tests {
     #[test]
     fn failed_screen_preflight_is_conservatively_unknown() {
         assert_eq!(
-            super::screen_authorization(false),
+            super::screen_authorization(false, false),
             NativeAuthorization::NotDetermined
+        );
+    }
+
+    #[test]
+    fn failed_screen_request_is_remembered_as_denied() {
+        assert_eq!(
+            super::screen_authorization(false, true),
+            NativeAuthorization::Denied
         );
     }
 
