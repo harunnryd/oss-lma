@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import sqlite3
+import time
 
 from lma_pipeline import SegmentAssembler
 from lma_stt.types import MeetingContext, ProviderAuthError, ProviderResetError
@@ -146,6 +147,7 @@ class Session:
         self.paused = False
         engine = self.engine_factory(ctx)
         self.stream = await engine.start(ctx)
+        self._stream_started_at_ms = int(time.time() * 1000)
         self.assembler = SegmentAssembler(frame.call_id)
         self.pump_task = asyncio.create_task(self._pump(self.stream, self.assembler))
         if self.record_meeting and self.recorder is None:
@@ -157,7 +159,9 @@ class Session:
             wav_path.parent.mkdir(parents=True, exist_ok=True)
             self.recorder = WavRecordingSink(wav_path)
         if self.db is not None:
-            self.db.write({"EventType": "START", "CallId": frame.call_id})
+            ev = {"EventType": "START", "CallId": frame.call_id}
+            self.db.write(ev)
+            self.time_offset_ms = self.db.write_meeting_started(ev, return_offset=True) or 0
 
     async def _close_session(self, drain: bool) -> None:
         if self.stream is None:

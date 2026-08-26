@@ -201,3 +201,16 @@ def test_apply_offset_adds_to_segment_timestamps():
     adjusted = session._apply_offset(event, 12_500)
     assert adjusted["StartTime"] == 17.5
     assert adjusted["EndTime"] == 19.0
+
+
+async def test_start_session_loads_existing_offset_from_db(tmp_path):
+    db_conn = _bootstrap(tmp_path)
+    db_conn.execute(
+        "INSERT INTO meetings (id, source, started_at, time_offset_ms) VALUES (?, ?, ?, ?)",
+        ("m-1", "LOCAL", 1700000000000, 12345),
+    )
+    db_conn.commit()
+    connection = MemoryConnection()
+    session = Session(connection, lambda ctx: ScriptedEngine([]), db=SqliteWriter(db_conn))
+    await session.on_text(json.dumps({"EventType": "START", "CallId": "m-1", "SamplingRate": 48000}))
+    assert session.time_offset_ms == 12345
