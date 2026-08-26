@@ -118,3 +118,45 @@ async def test_session_default_db_is_noop():
     session = Session(connection, lambda ctx: engine)
     await session.on_text(json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000}))
     assert session.db is None
+
+
+async def test_db_write_error_sends_db_write_conflict_frame(tmp_path):
+    db_conn = _bootstrap(tmp_path)
+    db_conn.execute(
+        "INSERT INTO meetings (id, source, started_at) VALUES (?, ?, ?)",
+        (CALL_ID, "LOCAL", 1700000000000),
+    )
+    db_conn.commit()
+
+    result = {
+        "result_id": "r1",
+        "is_partial": False,
+        "items": [
+            WordItem(
+                content="hello",
+                type="pronunciation",
+                start_time=0.0,
+                end_time=0.8,
+                speaker="spk_0",
+                channel="CALLER",
+                result_id="r1",
+            )
+        ],
+    }
+    connection = MemoryConnection()
+    engine = ScriptedEngine([result])
+    session = Session(
+        connection,
+        lambda ctx: engine,
+        db=SqliteWriter(db_conn),
+    )
+    await session.on_text(json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000}))
+    db_conn.execute("DELETE FROM meetings WHERE id = ?", (CALL_ID,))
+    db_conn.commit()
+    await session.on_binary(bytes(19200))
+    await eventually(lambda: any(
+        json.loads(m).get("Code") == "DB_WRITE_CONFLICT" for m in connection.sent
+    ))
+    frame = next(json.loads(m) for m in connection.sent if json.loads(m).get("Code") == "DB_WRITE_CONFLICT")
+    assert frame["EventType"] == "ERROR"
+    assert frame["CallId"] == CALL_ID

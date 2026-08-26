@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import sqlite3
 
 from lma_pipeline import SegmentAssembler
 from lma_stt.types import MeetingContext, ProviderAuthError, ProviderResetError
@@ -182,6 +183,12 @@ class Session:
                     if self.db is not None:
                         self.db.write(event)
                     await self._send(event)
+        except sqlite3.DatabaseError as exc:
+            logger.exception("sqlite error in pump for call %s", self.call_id)
+            await self._send(
+                error_frame(self.call_id, "DB_WRITE_CONFLICT", {"reason": str(exc)})
+            )
+            return
         except ConnectionClosed:
             return
         except ProviderAuthError:
