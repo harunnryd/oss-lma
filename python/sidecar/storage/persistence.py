@@ -5,7 +5,7 @@ from sidecar.storage.writers import dispatch_write, write_meeting_started
 
 
 class PersistenceWriter(Protocol):
-    def write(self, event: dict) -> None:
+    def write(self, event: dict, *, time_offset_ms: int = 0) -> None:
         ...
 
     def write_meeting_started(self, ev: dict, *, return_offset: bool = False) -> int | None:
@@ -13,7 +13,7 @@ class PersistenceWriter(Protocol):
 
 
 class NullWriter:
-    def write(self, event: dict) -> None:
+    def write(self, event: dict, *, time_offset_ms: int = 0) -> None:
         return None
 
     def write_meeting_started(self, ev: dict, *, return_offset: bool = False) -> int | None:
@@ -24,8 +24,8 @@ class SqliteWriter:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
 
-    def write(self, event: dict) -> None:
-        dispatch_write(self._conn, event)
+    def write(self, event: dict, *, time_offset_ms: int = 0) -> None:
+        dispatch_write(self._conn, event, time_offset_ms=time_offset_ms)
 
     def write_meeting_started(self, ev: dict, *, return_offset: bool = False) -> int | None:
         return write_meeting_started(self._conn, ev, return_offset=return_offset)

@@ -197,9 +197,10 @@ class Session:
         try:
             async for result in stream:
                 for event in assembler.on_result(result):
+                    adjusted = self._apply_offset(event, self.time_offset_ms)
                     if self.db is not None:
-                        self.db.write(event)
-                    await self._send(event)
+                        self.db.write(event, time_offset_ms=self.time_offset_ms)
+                    await self._send(adjusted)
         except sqlite3.DatabaseError as exc:
             logger.exception("sqlite error in pump for call %s", self.call_id)
             await self._send(

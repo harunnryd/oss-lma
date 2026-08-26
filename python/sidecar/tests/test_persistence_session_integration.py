@@ -203,6 +203,40 @@ def test_apply_offset_adds_to_segment_timestamps():
     assert adjusted["EndTime"] == 19.0
 
 
+async def test_pump_persists_offset_adjusted_segments(tmp_path):
+    db_conn = _bootstrap(tmp_path)
+    result = {
+        "result_id": "r1",
+        "is_partial": False,
+        "items": [
+            WordItem(
+                content="hello",
+                type="pronunciation",
+                start_time=5.0,
+                end_time=6.5,
+                speaker="spk_0",
+                channel="CALLER",
+                result_id="r1",
+            )
+        ],
+    }
+    connection = MemoryConnection()
+    engine = ScriptedEngine([result])
+    session = Session(connection, lambda ctx: engine, db=SqliteWriter(db_conn))
+    await session.on_text(json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000}))
+    session.time_offset_ms = 12_500
+    await session.on_binary(bytes(19200))
+    await eventually(lambda: len(connection.sent) == 1)
+    row = db_conn.execute(
+        "SELECT start_ms, end_ms FROM segments WHERE meeting_id = ?", (CALL_ID,)
+    ).fetchone()
+    assert row["start_ms"] == 17_500
+    assert row["end_ms"] == 19_000
+    wire = json.loads(connection.sent[0])
+    assert wire["StartTime"] == 17.5
+    assert wire["EndTime"] == 19.0
+
+
 async def test_start_session_loads_existing_offset_from_db(tmp_path):
     db_conn = _bootstrap(tmp_path)
     db_conn.execute(

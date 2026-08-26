@@ -40,8 +40,8 @@ def write_meeting_ended(conn: sqlite3.Connection, ev: dict) -> None:
     conn.commit()
 
 
-def write_segment(conn: sqlite3.Connection, ev: dict) -> None:
-    values = normalize_segment(ev)
+def write_segment(conn: sqlite3.Connection, ev: dict, *, time_offset_ms: int = 0) -> None:
+    values = normalize_segment(ev, time_offset_ms=time_offset_ms)
     conn.execute(
         "INSERT OR REPLACE INTO segments "
         "(segment_id, meeting_id, channel, speaker, start_ms, end_ms, "
@@ -117,14 +117,14 @@ def write_meeting_started_update_offset(conn, ev, *, time_offset_ms, reconnect_a
     conn.commit()
 
 
-def dispatch_write(conn: sqlite3.Connection, ev: dict) -> None:
+def dispatch_write(conn: sqlite3.Connection, ev: dict, *, time_offset_ms: int = 0) -> None:
     event_type = ev.get("EventType")
     if event_type == "START":
         write_meeting_started(conn, ev)
     elif event_type == "END":
         write_meeting_ended(conn, ev)
     elif event_type == "ADD_TRANSCRIPT_SEGMENT":
-        write_segment(conn, ev)
+        write_segment(conn, ev, time_offset_ms=time_offset_ms)
     elif event_type == "ADD_SUMMARY":
         write_summary(conn, ev)
     elif event_type == "ADD_AGENT_ASSIST":
