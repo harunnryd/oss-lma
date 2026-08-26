@@ -60,6 +60,7 @@ class Session:
         self.time_offset_ms: int = 0
         self.reconnect_state = ReconnectState()
         self._stream_started_at_ms: int | None = None
+        self._reconnecting = False
         self._sleep = sleep
         self._last_ctx: MeetingContext | None = None
 
@@ -125,12 +126,18 @@ class Session:
             return
         if self.paused:
             return
+        if self._reconnecting:
+            if self.recorder is not None:
+                self.recorder.feed(pcm)
+            return
         try:
             await self.stream.feed(pcm)
             if self.recorder is not None:
                 self.recorder.feed(pcm)
         except ValueError:
             await self._reject_invalid_frame()
+        except (ProviderResetError, ProviderAuthError, ConnectionClosed, OSError):
+            logger.debug("dropped audio chunk for call %s: stt stream unavailable", self.call_id)
 
     async def shutdown(self) -> None:
         await self._close_session(drain=False)
@@ -149,6 +156,7 @@ class Session:
         self.call_id = frame.call_id
         self.chunk_bytes = frame.sampling_rate * 4 // 10
         self.paused = False
+        self._reconnecting = False
         self._last_ctx = ctx
         engine = self.engine_factory(ctx)
         self.stream = await engine.start(ctx)
@@ -165,7 +173,6 @@ class Session:
             self.recorder = WavRecordingSink(wav_path)
         if self.db is not None:
             ev = {"EventType": "START", "CallId": frame.call_id}
-            self.db.write(ev)
             self.time_offset_ms = self.db.write_meeting_started(ev, return_offset=True) or 0
 
     async def _close_session(self, drain: bool) -> None:
@@ -201,7 +208,7 @@ class Session:
     def _now_ms(self) -> int:
         return int(time.time() * 1000)
 
-    def _ctx(self) -> MeetingContext:
+    def _ctx(self) -> MeetingContext | None:
         return self._last_ctx
 
     async def _pump(self, stream, assembler) -> None:
@@ -234,54 +241,79 @@ class Session:
                 return
             except ProviderResetError as exc:
                 logger.exception("stt provider reset error in pump for call %s", self.call_id)
-                consecutive = self.reconnect_state.consecutive_failures + 1
-                policy = load_reconnect_policy()
-                if consecutive > policy.max_consecutive:
-                    await self._fail_meeting(exc)
-                    return
-                self.reconnect_state.record_failure(self._now_ms())
-                backoff = self.reconnect_state.next_backoff_ms
-                await self._send(
-                    error_frame(self.call_id, "STT_STREAM_RESET", {"attempt": consecutive})
-                )
-                await self._sleep(backoff / 1000)
+                self._reconnecting = True
                 try:
-                    new_stream = await self.engine_factory(self._ctx()).start(self._ctx())
-                except (
-                    ProviderResetError,
-                    ProviderAuthError,
-                    ConnectionClosed,
-                    OSError,
-                    TimeoutError,
-                ):
-                    logger.exception(
-                        "stt provider restart failed in pump for call %s", self.call_id
+                    next_stream = await self._handle_provider_reset(exc, current_stream)
+                except ConnectionClosed:
+                    return
+                except sqlite3.DatabaseError as db_exc:
+                    logger.exception("sqlite error while reconnecting for call %s", self.call_id)
+                    await self._send_safe(
+                        error_frame(self.call_id, "DB_WRITE_CONFLICT", {"reason": str(db_exc)})
                     )
-                    continue
-                elapsed_ms = self._now_ms() - self._stream_started_at_ms
-                self.time_offset_ms += elapsed_ms
-                if self.db is not None:
-                    self.db.write_meeting_started_update_offset(
-                        {"EventType": "START", "CallId": self.call_id},
-                        time_offset_ms=self.time_offset_ms,
-                        reconnect_attempts=consecutive,
-                    )
-                self._stream_started_at_ms = self._now_ms()
-                self.stream = new_stream
-                current_stream = new_stream
+                    return
+                except Exception:
+                    logger.exception("unexpected error while reconnecting for call %s", self.call_id)
+                    await self._send_safe(error_frame(self.call_id, "STT_STREAM_RESET"))
+                    return
+                finally:
+                    self._reconnecting = False
+                if next_stream is None:
+                    return
+                current_stream = next_stream
                 continue
             except Exception:
                 logger.exception("unexpected error in pump for call %s", self.call_id)
                 await self._send(error_frame(self.call_id, "STT_STREAM_RESET"))
                 return
 
+    async def _handle_provider_reset(self, exc: Exception, current_stream):
+        consecutive = self.reconnect_state.consecutive_failures + 1
+        policy = load_reconnect_policy()
+        if consecutive > policy.max_consecutive:
+            await self._send_safe(
+                error_frame(self.call_id, "STT_STREAM_RESET", {"attempts": consecutive})
+            )
+            await self._fail_meeting(exc)
+            return None
+        self.reconnect_state.record_failure(self._now_ms())
+        backoff = self.reconnect_state.next_backoff_ms
+        await self._send(
+            error_frame(self.call_id, "STT_STREAM_RESET", {"attempt": consecutive})
+        )
+        await self._sleep(backoff / 1000)
+        try:
+            new_stream = await self.engine_factory(self._ctx()).start(self._ctx())
+        except (
+            ProviderResetError,
+            ProviderAuthError,
+            ConnectionClosed,
+            OSError,
+            TimeoutError,
+        ):
+            logger.exception("stt provider restart failed in pump for call %s", self.call_id)
+            return current_stream
+        elapsed_ms = self._now_ms() - self._stream_started_at_ms
+        self.time_offset_ms += elapsed_ms
+        if self.db is not None:
+            self.db.write_meeting_started_update_offset(
+                {"EventType": "START", "CallId": self.call_id},
+                time_offset_ms=self.time_offset_ms,
+                reconnect_attempts=consecutive,
+            )
+        self._stream_started_at_ms = self._now_ms()
+        try:
+            await current_stream.close()
+        except (ProviderResetError, ProviderAuthError, ConnectionClosed, OSError):
+            pass
+        self.stream = new_stream
+        return new_stream
+
     async def _fail_meeting(self, exc: Exception) -> None:
         logger.error("reconnect budget exhausted for call %s: %s", self.call_id, exc)
         if self.db is not None:
             self.db.write({"EventType": "END", "CallId": self.call_id})
-            self.db.write_meeting_failed(
-                {"EventType": "FAILED", "CallId": self.call_id, "Reason": str(exc)}
-            )
+            self.db.write_meeting_failed({"EventType": "FAILED", "CallId": self.call_id})
         try:
             await self.connection.close(1013, "stt-reconnect-exhausted")
         except Exception:
@@ -294,3 +326,9 @@ class Session:
     async def _send(self, event: dict) -> None:
         async with self.send_lock:
             await self.connection.send(serialize_event(event))
+
+    async def _send_safe(self, event: dict) -> None:
+        try:
+            await self._send(event)
+        except (ConnectionClosed, OSError, RuntimeError):
+            logger.debug("dropped outbound frame for call %s: connection unavailable", self.call_id)

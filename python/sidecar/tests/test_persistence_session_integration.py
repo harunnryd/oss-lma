@@ -3,6 +3,8 @@ import json
 from pathlib import Path
 
 from lma_stt.types import ProviderResetError, WordItem
+from websockets.exceptions import ConnectionClosed
+from websockets.frames import Close
 
 from sidecar.session import Session
 from sidecar.storage.connection import open_db
@@ -428,7 +430,126 @@ async def test_pump_closes_connection_after_budget_exhausted(tmp_path):
     await session.on_text(json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000}))
     await eventually(lambda: bool(connection.closes))
     assert connection.closes == [(1013, "stt-reconnect-exhausted")]
+    reset_frames = [
+        json.loads(m) for m in connection.sent if json.loads(m).get("Code") == "STT_STREAM_RESET"
+    ]
+    assert [f["Context"].get("attempt") for f in reset_frames[:-1]] == [1, 2, 3, 4, 5]
+    assert reset_frames[-1]["Context"] == {"attempts": 6}
+    assert reset_frames[-1]["EventType"] == "ERROR"
+    assert reset_frames[-1]["CallId"] == CALL_ID
     row = db_conn.execute(
-        "SELECT status FROM meetings WHERE id = ?", (CALL_ID,)
+        "SELECT status, ended_at, duration_ms FROM meetings WHERE id = ?", (CALL_ID,)
     ).fetchone()
     assert row["status"] == "FAILED"
+    assert row["ended_at"] is not None
+    assert row["duration_ms"] is not None
+
+
+def _provider_closed() -> ConnectionClosed:
+    return ConnectionClosed(Close(1006, "provider gone"), None)
+
+
+class DeadFeedStream:
+    def __init__(self, results, feed_exc: Exception):
+        self._real = ScriptedStream(list(results))
+        self._feed_exc = feed_exc
+        self._raised = False
+        self.feed_calls = 0
+        self.closed = False
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._raised:
+            self._raised = True
+            raise ProviderResetError("provider dropped mid-stream")
+        return await self._real.__anext__()
+
+    async def feed(self, pcm: bytes) -> None:
+        self.feed_calls += 1
+        raise self._feed_exc
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class DeadFeedEngine(ScriptedEngine):
+    def __init__(self, results, feed_exc: Exception):
+        super().__init__(results)
+        self.feed_exc = feed_exc
+        self.engines_started = 0
+        self.first_stream: DeadFeedStream | None = None
+
+    async def start(self, ctx):
+        self.engines_started += 1
+        if self.engines_started == 1:
+            self.first_stream = DeadFeedStream(self.results, self.feed_exc)
+            self.stream = self.first_stream
+            return self.first_stream
+        return await super().start(ctx)
+
+
+async def test_on_binary_tolerates_dead_provider_stream(tmp_path):
+    connection = MemoryConnection()
+    session = Session(connection, lambda ctx: ScriptedEngine([]))
+    await session.on_text(json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000}))
+    dead = DeadFeedStream([], _provider_closed())
+    session.stream = dead
+    await session.on_binary(bytes(19200))
+    assert dead.feed_calls == 1
+    assert connection.closes == []
+    assert connection.sent == []
+
+
+async def test_session_survives_audio_during_reconnect_backoff(tmp_path):
+    db_conn = _bootstrap(tmp_path)
+    result = {
+        "result_id": "r1",
+        "is_partial": False,
+        "items": [
+            WordItem(
+                content="hello",
+                type="pronunciation",
+                start_time=0.0,
+                end_time=1.0,
+                speaker="spk_0",
+                channel="CALLER",
+                result_id="r1",
+            )
+        ],
+    }
+    connection = MemoryConnection()
+    engine = DeadFeedEngine([result], _provider_closed())
+    entered_backoff = asyncio.Event()
+    release_backoff = asyncio.Event()
+
+    async def gated_sleep(_seconds):
+        entered_backoff.set()
+        await release_backoff.wait()
+
+    session = Session(
+        connection,
+        lambda ctx: engine,
+        db=SqliteWriter(db_conn),
+        sleep=gated_sleep,
+    )
+    await session.on_text(json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000}))
+    await asyncio.wait_for(entered_backoff.wait(), 2.0)
+    await session.on_binary(bytes(19200))
+    await session.on_binary(bytes(19200))
+    assert engine.first_stream is not None
+    assert engine.first_stream.feed_calls == 0
+    assert connection.closes == []
+    release_backoff.set()
+    await eventually(lambda: engine.engines_started == 2)
+    assert engine.first_stream.closed is True
+    await session.on_binary(bytes(19200))
+    await eventually(
+        lambda: any(
+            json.loads(m).get("EventType") == "ADD_TRANSCRIPT_SEGMENT" for m in connection.sent
+        )
+    )
+    assert connection.closes == []
+    assert session.pump_task is not None and not session.pump_task.done()
+
