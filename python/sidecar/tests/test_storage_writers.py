@@ -223,3 +223,68 @@ def test_write_meeting_started_update_offset_updates_time_offset(tmp_path):
     ).fetchone()
     assert row["time_offset_ms"] == 9999
     assert row["reconnect_attempts"] == 2
+
+def test_write_meeting_started_resets_terminal_state_on_resume(tmp_path):
+    from sidecar.storage.writers import write_meeting_failed
+
+    conn = _bootstrap(tmp_path)
+    write_meeting_started(conn, {"EventType": "START", "CallId": "m-1", "SamplingRate": 48000})
+    conn.execute(
+        "UPDATE meetings SET time_offset_ms = ?, reconnect_attempts = ?, duration_ms = ? "
+        "WHERE id = ?",
+        (7777, 4, 12345, "m-1"),
+    )
+    conn.commit()
+    write_meeting_failed(conn, {"EventType": "FAILED", "CallId": "m-1"})
+    offset = write_meeting_started(
+        conn, {"EventType": "START", "CallId": "m-1", "SamplingRate": 48000}, return_offset=True
+    )
+    row = conn.execute(
+        "SELECT status, ended_at, duration_ms, reconnect_attempts, time_offset_ms "
+        "FROM meetings WHERE id = 'm-1'"
+    ).fetchone()
+    assert offset == 7777
+    assert row["status"] == "RECORDING"
+    assert row["ended_at"] is None
+    assert row["duration_ms"] is None
+    assert row["reconnect_attempts"] == 0
+    assert row["time_offset_ms"] == 7777
+
+
+def test_write_meeting_ended_does_not_clobber_failed_status(tmp_path):
+    from sidecar.storage.writers import write_meeting_failed
+
+    conn = _bootstrap(tmp_path)
+    write_meeting_started(conn, {"EventType": "START", "CallId": "m-1", "SamplingRate": 48000})
+    write_meeting_failed(conn, {"EventType": "FAILED", "CallId": "m-1"})
+    write_meeting_ended(conn, {"EventType": "END", "CallId": "m-1"})
+    row = conn.execute("SELECT status, ended_at FROM meetings WHERE id = 'm-1'").fetchone()
+    assert row["status"] == "FAILED"
+    assert row["ended_at"] is not None
+
+
+def test_read_max_segment_end_ms_returns_none_without_segments(tmp_path):
+    from sidecar.storage.writers import read_max_segment_end_ms
+
+    conn = _bootstrap(tmp_path)
+    write_meeting_started(conn, {"EventType": "START", "CallId": "m-1", "SamplingRate": 48000})
+    assert read_max_segment_end_ms(conn, "m-1") is None
+
+
+def test_read_max_segment_end_ms_returns_largest_end(tmp_path):
+    from sidecar.storage.writers import read_max_segment_end_ms
+
+    conn = _bootstrap(tmp_path)
+    write_meeting_started(conn, {"EventType": "START", "CallId": "m-1", "SamplingRate": 48000})
+    for segment_id, end_time in (("s1", 1.5), ("s2", 4.25), ("s3", 3.0)):
+        write_segment(conn, {
+            "EventType": "ADD_TRANSCRIPT_SEGMENT",
+            "CallId": "m-1",
+            "SegmentId": segment_id,
+            "Channel": "CALLER",
+            "StartTime": 0.0,
+            "EndTime": end_time,
+            "Transcript": "hi",
+            "IsPartial": False,
+        })
+    assert read_max_segment_end_ms(conn, "m-1") == 4250
