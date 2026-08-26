@@ -22,6 +22,7 @@ from sidecar.frames import (
     parse_frame,
     serialize_event,
 )
+from sidecar.reconnect import ReconnectState
 from sidecar.storage.persistence import PersistenceWriter
 from sidecar.storage.recording import RecordingSink, WavRecordingSink
 
@@ -53,6 +54,18 @@ class Session:
         self.paused = False
         self.chunk_bytes = 0
         self.send_lock = asyncio.Lock()
+        self.time_offset_ms: int = 0
+        self.reconnect_state = ReconnectState()
+        self._stream_started_at_ms: int | None = None
+
+    def _apply_offset(self, event: dict, offset_ms: int) -> dict:
+        if offset_ms == 0 or event.get("EventType") != "ADD_TRANSCRIPT_SEGMENT":
+            return event
+        return {
+            **event,
+            "StartTime": round(event["StartTime"] * 1000 + offset_ms) / 1000,
+            "EndTime": round(event["EndTime"] * 1000 + offset_ms) / 1000,
+        }
 
     async def run(self) -> None:
         try:

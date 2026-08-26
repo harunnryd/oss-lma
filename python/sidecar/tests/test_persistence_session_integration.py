@@ -160,3 +160,44 @@ async def test_db_write_error_sends_db_write_conflict_frame(tmp_path):
     frame = next(json.loads(m) for m in connection.sent if json.loads(m).get("Code") == "DB_WRITE_CONFLICT")
     assert frame["EventType"] == "ERROR"
     assert frame["CallId"] == CALL_ID
+
+
+def test_session_default_time_offset_is_zero():
+    from sidecar.session import Session
+    conn = MemoryConnection()
+    session = Session(conn, lambda ctx: ScriptedEngine([]))
+    assert session.time_offset_ms == 0
+
+
+def test_apply_offset_identity_when_zero():
+    from sidecar.session import Session
+    conn = MemoryConnection()
+    session = Session(conn, lambda ctx: ScriptedEngine([]))
+    event = {
+        "EventType": "ADD_TRANSCRIPT_SEGMENT",
+        "SegmentId": "r1",
+        "Channel": "CALLER",
+        "StartTime": 5.0,
+        "EndTime": 6.5,
+        "Transcript": "hi",
+        "IsPartial": False,
+    }
+    assert session._apply_offset(event, 0) is event
+
+
+def test_apply_offset_adds_to_segment_timestamps():
+    from sidecar.session import Session
+    conn = MemoryConnection()
+    session = Session(conn, lambda ctx: ScriptedEngine([]))
+    event = {
+        "EventType": "ADD_TRANSCRIPT_SEGMENT",
+        "SegmentId": "r1",
+        "Channel": "CALLER",
+        "StartTime": 5.0,
+        "EndTime": 6.5,
+        "Transcript": "hi",
+        "IsPartial": False,
+    }
+    adjusted = session._apply_offset(event, 12_500)
+    assert adjusted["StartTime"] == 17.5
+    assert adjusted["EndTime"] == 19.0
