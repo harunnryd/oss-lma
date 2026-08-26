@@ -325,3 +325,79 @@ async def test_pump_reconnects_after_provider_reset(tmp_path):
     assert any(s.get("Code") == "STT_STREAM_RESET" for s in sent if s.get("EventType") == "ERROR")
     assert any(s.get("EventType") == "ADD_TRANSCRIPT_SEGMENT" for s in sent)
     assert engine.engines_started == 2
+
+
+class AlwaysResetStream:
+    def __init__(self, exc: Exception):
+        self.exc = exc
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        raise self.exc
+
+    async def feed(self, pcm: bytes) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
+
+
+class RestartFlakyEngine(ScriptedEngine):
+    def __init__(self, results, *, fail_restart_attempts=()):
+        super().__init__(results)
+        self.fail_restart_attempts = set(fail_restart_attempts)
+        self.engines_started = 0
+
+    async def start(self, ctx):
+        self.engines_started += 1
+        if self.engines_started == 1:
+            return AlwaysResetStream(ProviderResetError("dead stream"))
+        if self.engines_started in self.fail_restart_attempts:
+            raise ProviderResetError("restart attempt failed")
+        return await super().start(ctx)
+
+
+async def test_pump_retries_when_restart_attempt_itself_fails(tmp_path):
+    db_conn = _bootstrap(tmp_path)
+    result = {
+        "result_id": "r1",
+        "is_partial": False,
+        "items": [
+            WordItem(
+                content="hello",
+                type="pronunciation",
+                start_time=0.0,
+                end_time=1.0,
+                speaker="spk_0",
+                channel="CALLER",
+                result_id="r1",
+            )
+        ],
+    }
+    connection = MemoryConnection()
+    engine = RestartFlakyEngine([result], fail_restart_attempts={2})
+    session = Session(
+        connection,
+        lambda ctx: engine,
+        db=SqliteWriter(db_conn),
+        sleep=lambda _s: asyncio.sleep(0),
+    )
+    await session.on_text(json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000}))
+    await eventually(
+        lambda: sum(
+            1 for m in connection.sent if json.loads(m).get("Code") == "STT_STREAM_RESET"
+        )
+        >= 2
+    )
+    await session.on_binary(bytes(19200))
+    await eventually(
+        lambda: any(json.loads(m).get("EventType") == "ADD_TRANSCRIPT_SEGMENT" for m in connection.sent)
+    )
+    sent = [json.loads(m) for m in connection.sent]
+    reset_frames = [s for s in sent if s.get("Code") == "STT_STREAM_RESET"]
+    assert [f["Context"]["attempt"] for f in reset_frames] == [1, 2]
+    assert any(s.get("EventType") == "ADD_TRANSCRIPT_SEGMENT" for s in sent)
+    assert engine.engines_started == 3
+    assert session.reconnect_state.consecutive_failures == 0

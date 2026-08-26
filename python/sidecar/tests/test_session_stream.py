@@ -127,30 +127,6 @@ async def test_schema_violation_triggers_invalid_frame_policy():
     assert connection.closes == [(1008, "invalid-frame")]
 
 
-class RaisingStream:
-    def __init__(self, exc: Exception):
-        self.exc = exc
-
-    def __aiter__(self):
-        return self
-
-    async def __anext__(self):
-        raise self.exc
-
-    async def close(self):
-        pass
-
-
-class RaisingEngine:
-    def __init__(self, exc: Exception):
-        self.exc = exc
-        self.started_with = []
-
-    async def start(self, ctx):
-        self.started_with.append(dict(ctx))
-        return RaisingStream(self.exc)
-
-
 class HangingStream:
     def __init__(self):
         self.closed = False
