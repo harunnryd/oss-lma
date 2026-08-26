@@ -8,15 +8,9 @@ use cidre::{
     dispatch,
 };
 
-use crate::DeviceInfo;
+use crate::{DeviceInfo, DeviceKind};
 
 use super::{NativeStreamEvents, SourceKind};
-
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-pub enum DeviceKind {
-    SystemOutput,
-    Microphone,
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeviceSelection {
@@ -33,14 +27,14 @@ pub struct NativeDevice {
 }
 
 pub trait DeviceProvider {
-    fn list(&self) -> Result<Vec<NativeDevice>, String>;
+    fn list(&self) -> Result<Vec<Result<NativeDevice, String>>, String>;
 }
 
 #[derive(Clone, Copy)]
 pub struct NativeDevices;
 
 impl DeviceProvider for NativeDevices {
-    fn list(&self) -> Result<Vec<NativeDevice>, String> {
+    fn list(&self) -> Result<Vec<Result<NativeDevice, String>>, String> {
         let default_input = System::default_input_device().ok();
         let default_output = System::default_output_device().ok();
         let mut devices = Vec::new();
@@ -50,14 +44,14 @@ impl DeviceProvider for NativeDevices {
                     device,
                     DeviceKind::SystemOutput,
                     default_output == Some(device),
-                )?);
+                ));
             }
             if has_channels(&device, DeviceKind::Microphone) {
                 devices.push(native_device(
                     device,
                     DeviceKind::Microphone,
                     default_input == Some(device),
-                )?);
+                ));
             }
         }
         Ok(devices)
@@ -156,7 +150,12 @@ impl<P: DeviceProvider> MacDevices<P> {
     }
 
     fn native_devices(&self) -> Vec<NativeDevice> {
-        self.provider.list().unwrap_or_default()
+        self.provider
+            .list()
+            .unwrap_or_default()
+            .into_iter()
+            .flatten()
+            .collect()
     }
 }
 
@@ -165,6 +164,7 @@ fn to_device_info(device: NativeDevice) -> DeviceInfo {
         id: device.id,
         name: device.name,
         is_default: device.is_default,
+        kind: device.kind,
     }
 }
 
@@ -228,34 +228,34 @@ mod tests {
     use crate::DeviceInfo;
 
     #[derive(Clone)]
-    struct FakeDevices(Vec<NativeDevice>);
+    struct FakeDevices(Vec<Result<NativeDevice, String>>);
 
     impl DeviceProvider for FakeDevices {
-        fn list(&self) -> Result<Vec<NativeDevice>, String> {
+        fn list(&self) -> Result<Vec<Result<NativeDevice, String>>, String> {
             Ok(self.0.clone())
         }
     }
 
     fn devices() -> MacDevices<FakeDevices> {
         MacDevices::with_provider(FakeDevices(vec![
-            NativeDevice {
+            Ok(NativeDevice {
                 id: "speaker-default".into(),
                 name: "MacBook Speakers".into(),
                 kind: DeviceKind::SystemOutput,
                 is_default: true,
-            },
-            NativeDevice {
+            }),
+            Ok(NativeDevice {
                 id: "mic-default".into(),
                 name: "MacBook Microphone".into(),
                 kind: DeviceKind::Microphone,
                 is_default: true,
-            },
-            NativeDevice {
+            }),
+            Ok(NativeDevice {
                 id: "mic-usb".into(),
                 name: "USB Microphone".into(),
                 kind: DeviceKind::Microphone,
                 is_default: false,
-            },
+            }),
         ]))
     }
 
@@ -270,16 +270,19 @@ mod tests {
                     id: "speaker-default".into(),
                     name: "MacBook Speakers".into(),
                     is_default: true,
+                    kind: DeviceKind::SystemOutput,
                 },
                 DeviceInfo {
                     id: "mic-default".into(),
                     name: "MacBook Microphone".into(),
                     is_default: true,
+                    kind: DeviceKind::Microphone,
                 },
                 DeviceInfo {
                     id: "mic-usb".into(),
                     name: "USB Microphone".into(),
                     is_default: false,
+                    kind: DeviceKind::Microphone,
                 },
             ]
         );
@@ -314,5 +317,33 @@ mod tests {
                 &super::DeviceSelection::DeviceId("mic-usb".into())
             )
             .is_none());
+    }
+
+    #[test]
+    fn keeps_valid_devices_when_one_native_entry_is_malformed() {
+        let devices = MacDevices::with_provider(FakeDevices(vec![
+            Ok(NativeDevice {
+                id: "speaker-default".into(),
+                name: "MacBook Speakers".into(),
+                kind: DeviceKind::SystemOutput,
+                is_default: true,
+            }),
+            Err("device name was unavailable".into()),
+            Ok(NativeDevice {
+                id: "mic-default".into(),
+                name: "MacBook Microphone".into(),
+                kind: DeviceKind::Microphone,
+                is_default: true,
+            }),
+        ]));
+
+        assert_eq!(
+            devices
+                .list()
+                .into_iter()
+                .map(|device| device.id)
+                .collect::<Vec<_>>(),
+            ["speaker-default", "mic-default"]
+        );
     }
 }

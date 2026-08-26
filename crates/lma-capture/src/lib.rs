@@ -28,12 +28,19 @@ pub enum PermissionState {
     Granted,
 }
 
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub enum DeviceKind {
+    SystemOutput,
+    Microphone,
+}
+
 /// A capture device exposed to the shell for selection and display.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeviceInfo {
     pub id: String,
     pub name: String,
     pub is_default: bool,
+    pub kind: DeviceKind,
 }
 
 /// Platform-neutral notifications emitted by the capture layer.

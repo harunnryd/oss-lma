@@ -4,14 +4,17 @@ use std::sync::{
     mpsc::{self, Sender},
     Arc,
 };
+use std::time::Duration;
 
 use cidre::sc::{StreamDelegate as _, StreamOutput as _};
 use cidre::{arc, cm, define_obj_type, dispatch, ns, objc, sc};
 
 use super::{
-    devices::DeviceWatcher, DeviceSelection, MonoFrames, NativeStream, NativeStreamEvents,
-    SourceKind,
+    devices::DeviceWatcher, DeviceSelection, MacPermissions, MonoFrames, NativeStream,
+    NativeStreamEvents, SourceKind,
 };
+
+const NATIVE_OPERATION_TIMEOUT: Duration = Duration::from_secs(15);
 
 struct ScreenOutputInner {
     frames: Sender<MonoFrames>,
@@ -87,8 +90,8 @@ struct ScreenCaptureStream {
 }
 
 impl NativeStream for ScreenCaptureStream {
-    fn stop(&mut self) {
-        let _ = wait_for_stream(|completion| self.stream.stop_with_ch(completion));
+    fn stop(&mut self) -> Result<(), String> {
+        wait_for_stream(|completion| self.stream.stop_with_ch(completion))
     }
 }
 
@@ -100,6 +103,7 @@ pub(super) fn start(
     if !matches!(selection, DeviceSelection::Default) {
         return Err("ScreenCaptureKit captures the active default output only".to_owned());
     }
+    MacPermissions::screen_recording().ensure_access()?;
     let content = current_content()?;
     let displays = content.displays();
     let display = displays
@@ -145,20 +149,54 @@ fn current_content() -> Result<arc::R<sc::ShareableContent>, String> {
         let _ = sender.send(result);
     });
     receiver
-        .recv()
-        .map_err(|_| "ScreenCaptureKit content request was cancelled".to_owned())?
+        .recv_timeout(NATIVE_OPERATION_TIMEOUT)
+        .map_err(|error| match error {
+            mpsc::RecvTimeoutError::Timeout => {
+                "ScreenCaptureKit content request timed out".to_owned()
+            }
+            mpsc::RecvTimeoutError::Disconnected => {
+                "ScreenCaptureKit content request was cancelled".to_owned()
+            }
+        })?
 }
 
 fn wait_for_stream(action: impl FnOnce(Box<dyn FnMut(Option<&ns::Error>)>)) -> Result<(), String> {
+    wait_for_stream_with_timeout(NATIVE_OPERATION_TIMEOUT, action)
+}
+
+fn wait_for_stream_with_timeout(
+    timeout: Duration,
+    action: impl FnOnce(Box<dyn FnMut(Option<&ns::Error>)>),
+) -> Result<(), String> {
     let (sender, receiver) = mpsc::sync_channel(1);
     action(Box::new(move |error| {
         let _ = sender.send(error.map(|error| format!("{error:?}")));
     }));
     match receiver
-        .recv()
-        .map_err(|_| "ScreenCaptureKit operation was cancelled".to_owned())?
-    {
+        .recv_timeout(timeout)
+        .map_err(|error| match error {
+            mpsc::RecvTimeoutError::Timeout => "ScreenCaptureKit operation timed out".to_owned(),
+            mpsc::RecvTimeoutError::Disconnected => {
+                "ScreenCaptureKit operation was cancelled".to_owned()
+            }
+        })? {
         Some(error) => Err(error),
         None => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{cell::RefCell, time::Duration};
+
+    #[test]
+    fn stream_operation_returns_an_error_when_native_completion_never_arrives() {
+        let pending = RefCell::new(None);
+
+        let result = super::wait_for_stream_with_timeout(Duration::from_millis(1), |completion| {
+            pending.replace(Some(completion));
+        });
+
+        assert_eq!(result.unwrap_err(), "ScreenCaptureKit operation timed out");
     }
 }

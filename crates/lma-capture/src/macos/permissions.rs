@@ -1,4 +1,6 @@
-use cidre::{av, cg, ns};
+use std::{sync::mpsc, time::Duration};
+
+use cidre::{av, blocks, cg, ns};
 
 use crate::PermissionState;
 
@@ -17,6 +19,7 @@ pub enum NativeAuthorization {
 
 pub trait PermissionProvider {
     fn status(&self, kind: PermissionKind) -> NativeAuthorization;
+    fn request(&self, kind: PermissionKind) -> Result<NativeAuthorization, String>;
     fn open_settings(&self, kind: PermissionKind) -> Result<(), String>;
 }
 
@@ -27,11 +30,7 @@ impl PermissionProvider for NativePermissions {
     fn status(&self, kind: PermissionKind) -> NativeAuthorization {
         match kind {
             PermissionKind::ScreenRecording => {
-                if cg::screen_capture_access::preflight() {
-                    NativeAuthorization::Authorized
-                } else {
-                    NativeAuthorization::Denied
-                }
+                screen_authorization(cg::screen_capture_access::preflight())
             }
             PermissionKind::Microphone => {
                 let status =
@@ -44,6 +43,35 @@ impl PermissionProvider for NativePermissions {
                     Ok(av::AuthorizationStatus::Restricted | av::AuthorizationStatus::Denied)
                     | Err(_) => NativeAuthorization::Denied,
                 }
+            }
+        }
+    }
+
+    fn request(&self, kind: PermissionKind) -> Result<NativeAuthorization, String> {
+        match kind {
+            PermissionKind::ScreenRecording => Ok(if cg::screen_capture_access::request() {
+                NativeAuthorization::Authorized
+            } else {
+                NativeAuthorization::Denied
+            }),
+            PermissionKind::Microphone => {
+                let (sender, receiver) = mpsc::sync_channel(1);
+                let mut completion = blocks::SendBlock::new1(move |granted: bool| {
+                    let _ = sender.send(granted);
+                });
+                av::CaptureDevice::request_access_for_media_type_ch(
+                    av::MediaType::audio(),
+                    &mut completion,
+                )
+                .map_err(|error| format!("{error:?}"))?;
+                let granted = receiver
+                    .recv_timeout(Duration::from_secs(120))
+                    .map_err(|_| "microphone permission request timed out".to_owned())?;
+                Ok(if granted {
+                    NativeAuthorization::Authorized
+                } else {
+                    NativeAuthorization::Denied
+                })
             }
         }
     }
@@ -62,6 +90,14 @@ impl PermissionProvider for NativePermissions {
         } else {
             Err("System Settings could not be opened".to_owned())
         }
+    }
+}
+
+fn screen_authorization(preflight_granted: bool) -> NativeAuthorization {
+    if preflight_granted {
+        NativeAuthorization::Authorized
+    } else {
+        NativeAuthorization::NotDetermined
     }
 }
 
@@ -102,6 +138,26 @@ impl<P: PermissionProvider> MacPermissions<P> {
     pub fn open_settings(&self) -> Result<(), String> {
         self.provider.open_settings(self.kind)
     }
+
+    pub fn ensure_access(&self) -> Result<(), String> {
+        let authorization = match self.provider.status(self.kind) {
+            NativeAuthorization::NotDetermined => self.provider.request(self.kind)?,
+            authorization => authorization,
+        };
+        if authorization == NativeAuthorization::Authorized {
+            return Ok(());
+        }
+        let name = match self.kind {
+            PermissionKind::ScreenRecording => "Screen Recording",
+            PermissionKind::Microphone => "Microphone",
+        };
+        self.provider
+            .open_settings(self.kind)
+            .map_err(|error| format!("{name} permission was not granted: {error}"))?;
+        Err(format!(
+            "{name} permission was not granted; System Settings was opened"
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -116,6 +172,7 @@ mod tests {
     struct FakePermissions {
         screen: NativeAuthorization,
         microphone: NativeAuthorization,
+        requested: Rc<RefCell<Vec<PermissionKind>>>,
         opened: Rc<RefCell<Vec<PermissionKind>>>,
     }
 
@@ -130,6 +187,11 @@ mod tests {
         fn open_settings(&self, kind: PermissionKind) -> Result<(), String> {
             self.opened.borrow_mut().push(kind);
             Ok(())
+        }
+
+        fn request(&self, kind: PermissionKind) -> Result<NativeAuthorization, String> {
+            self.requested.borrow_mut().push(kind);
+            Ok(NativeAuthorization::Denied)
         }
     }
 
@@ -147,6 +209,7 @@ mod tests {
                 FakePermissions {
                     screen: NativeAuthorization::Authorized,
                     microphone: native,
+                    requested: Rc::new(RefCell::new(Vec::new())),
                     opened: Rc::new(RefCell::new(Vec::new())),
                 },
             );
@@ -160,6 +223,7 @@ mod tests {
         let provider = FakePermissions {
             screen: NativeAuthorization::Denied,
             microphone: NativeAuthorization::Denied,
+            requested: Rc::new(RefCell::new(Vec::new())),
             opened: opened.clone(),
         };
         let screen =
@@ -173,5 +237,34 @@ mod tests {
             *opened.borrow(),
             [PermissionKind::ScreenRecording, PermissionKind::Microphone]
         );
+    }
+
+    #[test]
+    fn failed_screen_preflight_is_conservatively_unknown() {
+        assert_eq!(
+            super::screen_authorization(false),
+            NativeAuthorization::NotDetermined
+        );
+    }
+
+    #[test]
+    fn denied_permission_request_opens_settings_and_returns_an_error() {
+        let opened = Rc::new(RefCell::new(Vec::new()));
+        let requested = Rc::new(RefCell::new(Vec::new()));
+        let permissions = MacPermissions::with_provider(
+            PermissionKind::ScreenRecording,
+            FakePermissions {
+                screen: NativeAuthorization::NotDetermined,
+                microphone: NativeAuthorization::Authorized,
+                requested: requested.clone(),
+                opened: opened.clone(),
+            },
+        );
+
+        let error = permissions.ensure_access().unwrap_err();
+
+        assert!(error.contains("Screen Recording permission was not granted"));
+        assert_eq!(*requested.borrow(), [PermissionKind::ScreenRecording]);
+        assert_eq!(*opened.borrow(), [PermissionKind::ScreenRecording]);
     }
 }
