@@ -45,17 +45,22 @@ def normalize_meeting_ended(ev: dict) -> tuple:
     return (ev["CallId"], "COMPLETED", ended_at)
 
 
-def normalize_segment(ev: dict) -> tuple:
+def normalize_segment(ev: dict, *, time_offset_ms: int = 0) -> tuple:
     speaker = ev.get("Speaker")
     if speaker == "":
         speaker = None
+    start_ms = _float_seconds_to_ms(ev["StartTime"])
+    end_ms = _float_seconds_to_ms(ev["EndTime"])
+    if time_offset_ms:
+        start_ms += time_offset_ms
+        end_ms += time_offset_ms
     return (
         ev["SegmentId"],
         ev["CallId"],
         ev["Channel"],
         speaker,
-        _float_seconds_to_ms(ev["StartTime"]),
-        _float_seconds_to_ms(ev["EndTime"]),
+        start_ms,
+        end_ms,
         ev["Transcript"],
         ev["Transcript"],
         _bool_to_int(ev["IsPartial"]),
