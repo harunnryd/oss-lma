@@ -1,7 +1,11 @@
 import sqlite3
 from typing import Protocol
 
-from sidecar.storage.writers import dispatch_write, write_meeting_started
+from sidecar.storage.writers import (
+    dispatch_write,
+    write_meeting_started,
+    write_meeting_started_update_offset,
+)
 
 
 class PersistenceWriter(Protocol):
@@ -11,12 +15,22 @@ class PersistenceWriter(Protocol):
     def write_meeting_started(self, ev: dict, *, return_offset: bool = False) -> int | None:
         ...
 
+    def write_meeting_started_update_offset(
+        self, ev: dict, *, time_offset_ms: int, reconnect_attempts: int | None = None
+    ) -> None:
+        ...
+
 
 class NullWriter:
     def write(self, event: dict, *, time_offset_ms: int = 0) -> None:
         return None
 
     def write_meeting_started(self, ev: dict, *, return_offset: bool = False) -> int | None:
+        return None
+
+    def write_meeting_started_update_offset(
+        self, ev: dict, *, time_offset_ms: int, reconnect_attempts: int | None = None
+    ) -> None:
         return None
 
 
@@ -29,3 +43,10 @@ class SqliteWriter:
 
     def write_meeting_started(self, ev: dict, *, return_offset: bool = False) -> int | None:
         return write_meeting_started(self._conn, ev, return_offset=return_offset)
+
+    def write_meeting_started_update_offset(
+        self, ev: dict, *, time_offset_ms: int, reconnect_attempts: int | None = None
+    ) -> None:
+        return write_meeting_started_update_offset(
+            self._conn, ev, time_offset_ms=time_offset_ms, reconnect_attempts=reconnect_attempts
+        )

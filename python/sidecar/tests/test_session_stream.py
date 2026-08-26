@@ -262,15 +262,44 @@ async def test_provider_side_chunk_size_mismatch_is_handled_gracefully():
     assert connection.closes == [(INVALID_FRAME_CLOSE_CODE, "invalid-frame")]
 
 
-async def test_provider_reset_during_pump_sends_error_frame_and_ends_pump():
+class ResetOnceStream:
+    def __init__(self, exc: Exception | None):
+        self.exc = exc
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self.exc is not None:
+            raise self.exc
+        await asyncio.sleep(3600)
+
+    async def close(self):
+        pass
+
+
+class ResetOnceEngine:
+    def __init__(self, exc: Exception):
+        self.exc = exc
+        self.started_with = []
+        self.started_count = 0
+
+    async def start(self, ctx):
+        self.started_with.append(dict(ctx))
+        self.started_count += 1
+        return ResetOnceStream(self.exc if self.started_count == 1 else None)
+
+
+async def test_provider_reset_during_pump_sends_error_frame_and_reconnects():
     connection = MemoryConnection()
-    engine = RaisingEngine(ProviderResetError("upstream dropped"))
-    session = Session(connection, lambda ctx: engine)
+    engine = ResetOnceEngine(ProviderResetError("upstream dropped"))
+    session = Session(connection, lambda ctx: engine, sleep=lambda _s: asyncio.sleep(0))
     await session.on_text(start_message())
     await eventually(lambda: bool(connection.sent))
     assert [json.loads(message) for message in connection.sent] == [{
         "EventType": "ERROR",
         "CallId": CALL_ID,
         "Code": "STT_STREAM_RESET",
+        "Context": {"attempt": 1},
     }]
-    await eventually(lambda: session.pump_task.done())
+    assert not session.pump_task.done()

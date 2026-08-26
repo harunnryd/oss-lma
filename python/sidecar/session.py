@@ -2,6 +2,7 @@ import asyncio
 import logging
 import sqlite3
 import time
+from collections.abc import Awaitable, Callable
 
 from lma_pipeline import SegmentAssembler
 from lma_stt.types import MeetingContext, ProviderAuthError, ProviderResetError
@@ -23,7 +24,7 @@ from sidecar.frames import (
     parse_frame,
     serialize_event,
 )
-from sidecar.reconnect import ReconnectState
+from sidecar.reconnect import ReconnectState, load_reconnect_policy
 from sidecar.storage.persistence import PersistenceWriter
 from sidecar.storage.recording import RecordingSink, WavRecordingSink
 
@@ -42,6 +43,7 @@ class Session:
         db: PersistenceWriter | None = None,
         recorder: RecordingSink | None = None,
         record_meeting: bool = False,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self.connection = connection
         self.engine_factory = engine_factory
@@ -58,6 +60,8 @@ class Session:
         self.time_offset_ms: int = 0
         self.reconnect_state = ReconnectState()
         self._stream_started_at_ms: int | None = None
+        self._sleep = sleep
+        self._last_ctx: MeetingContext | None = None
 
     def _apply_offset(self, event: dict, offset_ms: int) -> dict:
         if offset_ms == 0 or event.get("EventType") != "ADD_TRANSCRIPT_SEGMENT":
@@ -145,9 +149,10 @@ class Session:
         self.call_id = frame.call_id
         self.chunk_bytes = frame.sampling_rate * 4 // 10
         self.paused = False
+        self._last_ctx = ctx
         engine = self.engine_factory(ctx)
         self.stream = await engine.start(ctx)
-        self._stream_started_at_ms = int(time.time() * 1000)
+        self._stream_started_at_ms = self._now_ms()
         self.assembler = SegmentAssembler(frame.call_id)
         self.pump_task = asyncio.create_task(self._pump(self.stream, self.assembler))
         if self.record_meeting and self.recorder is None:
@@ -193,34 +198,82 @@ class Session:
         if self.recorder is not None:
             self.recorder.stop()
 
+    def _now_ms(self) -> int:
+        return int(time.time() * 1000)
+
+    def _ctx(self) -> MeetingContext:
+        return self._last_ctx
+
     async def _pump(self, stream, assembler) -> None:
-        try:
-            async for result in stream:
-                for event in assembler.on_result(result):
-                    adjusted = self._apply_offset(event, self.time_offset_ms)
-                    if self.db is not None:
-                        self.db.write(event, time_offset_ms=self.time_offset_ms)
-                    await self._send(adjusted)
-        except sqlite3.DatabaseError as exc:
-            logger.exception("sqlite error in pump for call %s", self.call_id)
-            await self._send(
-                error_frame(self.call_id, "DB_WRITE_CONFLICT", {"reason": str(exc)})
-            )
-            return
-        except ConnectionClosed:
-            return
-        except ProviderAuthError:
-            logger.exception("stt provider auth error in pump for call %s", self.call_id)
-            await self._send(error_frame(self.call_id, "STT_PROVIDER_AUTH"))
-            return
-        except ProviderResetError:
-            logger.exception("stt provider reset error in pump for call %s", self.call_id)
-            await self._send(error_frame(self.call_id, "STT_STREAM_RESET"))
-            return
-        except Exception:
-            logger.exception("unexpected error in pump for call %s", self.call_id)
-            await self._send(error_frame(self.call_id, "STT_STREAM_RESET"))
-            return
+        self.reconnect_state = ReconnectState()
+        current_stream = stream
+        while True:
+            try:
+                async for result in current_stream:
+                    now = self._now_ms()
+                    self.reconnect_state.maybe_reset_on_idle(now)
+                    if self.reconnect_state.consecutive_failures > 0:
+                        self.reconnect_state.record_success()
+                    for event in assembler.on_result(result):
+                        adjusted = self._apply_offset(event, self.time_offset_ms)
+                        if self.db is not None:
+                            self.db.write(event, time_offset_ms=self.time_offset_ms)
+                        await self._send(adjusted)
+                return
+            except sqlite3.DatabaseError as exc:
+                logger.exception("sqlite error in pump for call %s", self.call_id)
+                await self._send(
+                    error_frame(self.call_id, "DB_WRITE_CONFLICT", {"reason": str(exc)})
+                )
+                return
+            except ConnectionClosed:
+                return
+            except ProviderAuthError:
+                logger.exception("stt provider auth error in pump for call %s", self.call_id)
+                await self._send(error_frame(self.call_id, "STT_PROVIDER_AUTH"))
+                return
+            except ProviderResetError as exc:
+                logger.exception("stt provider reset error in pump for call %s", self.call_id)
+                consecutive = self.reconnect_state.consecutive_failures + 1
+                policy = load_reconnect_policy()
+                if consecutive > policy.max_consecutive:
+                    await self._fail_meeting(exc)
+                    return
+                self.reconnect_state.record_failure(self._now_ms())
+                backoff = self.reconnect_state.next_backoff_ms
+                await self._send(
+                    error_frame(self.call_id, "STT_STREAM_RESET", {"attempt": consecutive})
+                )
+                await self._sleep(backoff / 1000)
+                try:
+                    new_stream = await self.engine_factory(self._ctx()).start(self._ctx())
+                except (
+                    ProviderResetError,
+                    ProviderAuthError,
+                    ConnectionClosed,
+                    OSError,
+                    TimeoutError,
+                ):
+                    logger.exception(
+                        "stt provider restart failed in pump for call %s", self.call_id
+                    )
+                    continue
+                elapsed_ms = self._now_ms() - self._stream_started_at_ms
+                self.time_offset_ms += elapsed_ms
+                if self.db is not None:
+                    self.db.write_meeting_started_update_offset(
+                        {"EventType": "START", "CallId": self.call_id},
+                        time_offset_ms=self.time_offset_ms,
+                        reconnect_attempts=consecutive,
+                    )
+                self._stream_started_at_ms = self._now_ms()
+                self.stream = new_stream
+                current_stream = new_stream
+                continue
+            except Exception:
+                logger.exception("unexpected error in pump for call %s", self.call_id)
+                await self._send(error_frame(self.call_id, "STT_STREAM_RESET"))
+                return
 
     async def _reject_invalid_frame(self) -> None:
         await self._send(error_frame(self.call_id, INVALID_FRAME_CODE, INVALID_FRAME_CONTEXT))

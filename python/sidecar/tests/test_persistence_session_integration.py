@@ -1,7 +1,8 @@
+import asyncio
 import json
 from pathlib import Path
 
-from lma_stt.types import WordItem
+from lma_stt.types import ProviderResetError, WordItem
 
 from sidecar.session import Session
 from sidecar.storage.connection import open_db
@@ -9,7 +10,7 @@ from sidecar.storage.migrations import apply_migrations
 from sidecar.storage.persistence import SqliteWriter
 from sidecar.storage.recording import WavRecordingSink
 
-from tests.helpers import MemoryConnection, ScriptedEngine, eventually
+from tests.helpers import MemoryConnection, ScriptedEngine, ScriptedStream, eventually
 
 CALL_ID = "11111111-1111-1111-1111-111111111111"
 
@@ -248,3 +249,79 @@ async def test_start_session_loads_existing_offset_from_db(tmp_path):
     session = Session(connection, lambda ctx: ScriptedEngine([]), db=SqliteWriter(db_conn))
     await session.on_text(json.dumps({"EventType": "START", "CallId": "m-1", "SamplingRate": 48000}))
     assert session.time_offset_ms == 12345
+
+
+class FlakyStream:
+    def __init__(self, real_stream: ScriptedStream):
+        self._real = real_stream
+        self._raised = False
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._raised:
+            self._raised = True
+            raise ProviderResetError("flaky first stream")
+        return await self._real.__anext__()
+
+    async def feed(self, pcm: bytes) -> None:
+        await self._real.feed(pcm)
+
+    async def close(self) -> None:
+        await self._real.close()
+
+
+class FlakyScriptedEngine(ScriptedEngine):
+    def __init__(self, results, *, raise_reset_first=False):
+        super().__init__(results)
+        self.raise_reset_first = raise_reset_first
+        self.engines_started = 0
+
+    async def start(self, ctx):
+        self.engines_started += 1
+        real_stream = await super().start(ctx)
+        if self.raise_reset_first and self.engines_started == 1:
+            wrapped = FlakyStream(real_stream)
+            self.stream = wrapped
+            return wrapped
+        return real_stream
+
+
+async def test_pump_reconnects_after_provider_reset(tmp_path):
+    db_conn = _bootstrap(tmp_path)
+    result = {
+        "result_id": "r1",
+        "is_partial": False,
+        "items": [
+            WordItem(
+                content="hello",
+                type="pronunciation",
+                start_time=0.0,
+                end_time=1.0,
+                speaker="spk_0",
+                channel="CALLER",
+                result_id="r1",
+            )
+        ],
+    }
+    connection = MemoryConnection()
+    engine = FlakyScriptedEngine([result], raise_reset_first=True)
+    session = Session(
+        connection,
+        lambda ctx: engine,
+        db=SqliteWriter(db_conn),
+        sleep=lambda _s: asyncio.sleep(0),
+    )
+    await session.on_text(json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000}))
+    await eventually(
+        lambda: any(json.loads(m).get("Code") == "STT_STREAM_RESET" for m in connection.sent)
+    )
+    await session.on_binary(bytes(19200))
+    await eventually(
+        lambda: any(json.loads(m).get("EventType") == "ADD_TRANSCRIPT_SEGMENT" for m in connection.sent)
+    )
+    sent = [json.loads(m) for m in connection.sent]
+    assert any(s.get("Code") == "STT_STREAM_RESET" for s in sent if s.get("EventType") == "ERROR")
+    assert any(s.get("EventType") == "ADD_TRANSCRIPT_SEGMENT" for s in sent)
+    assert engine.engines_started == 2
