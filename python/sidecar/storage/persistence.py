@@ -3,6 +3,7 @@ from typing import Protocol
 
 from sidecar.storage.writers import (
     dispatch_write,
+    write_meeting_failed,
     write_meeting_started,
     write_meeting_started_update_offset,
 )
@@ -20,6 +21,9 @@ class PersistenceWriter(Protocol):
     ) -> None:
         ...
 
+    def write_meeting_failed(self, ev: dict) -> None:
+        ...
+
 
 class NullWriter:
     def write(self, event: dict, *, time_offset_ms: int = 0) -> None:
@@ -31,6 +35,9 @@ class NullWriter:
     def write_meeting_started_update_offset(
         self, ev: dict, *, time_offset_ms: int, reconnect_attempts: int | None = None
     ) -> None:
+        return None
+
+    def write_meeting_failed(self, ev: dict) -> None:
         return None
 
 
@@ -50,3 +57,6 @@ class SqliteWriter:
         return write_meeting_started_update_offset(
             self._conn, ev, time_offset_ms=time_offset_ms, reconnect_attempts=reconnect_attempts
         )
+
+    def write_meeting_failed(self, ev: dict) -> None:
+        return write_meeting_failed(self._conn, ev)

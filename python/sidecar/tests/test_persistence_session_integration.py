@@ -401,3 +401,34 @@ async def test_pump_retries_when_restart_attempt_itself_fails(tmp_path):
     assert any(s.get("EventType") == "ADD_TRANSCRIPT_SEGMENT" for s in sent)
     assert engine.engines_started == 3
     assert session.reconnect_state.consecutive_failures == 0
+
+
+class AlwaysFailEngine(ScriptedEngine):
+    def __init__(self, results):
+        super().__init__(results)
+        self.engines_started = 0
+
+    async def start(self, ctx):
+        self.engines_started += 1
+        if self.engines_started == 1:
+            return AlwaysResetStream(ProviderResetError("dead stream"))
+        raise ProviderResetError("restart attempt failed")
+
+
+async def test_pump_closes_connection_after_budget_exhausted(tmp_path):
+    db_conn = _bootstrap(tmp_path)
+    connection = MemoryConnection()
+    engine = AlwaysFailEngine([])
+    session = Session(
+        connection,
+        lambda ctx: engine,
+        db=SqliteWriter(db_conn),
+        sleep=lambda _s: asyncio.sleep(0),
+    )
+    await session.on_text(json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000}))
+    await eventually(lambda: bool(connection.closes))
+    assert connection.closes == [(1013, "stt-reconnect-exhausted")]
+    row = db_conn.execute(
+        "SELECT status FROM meetings WHERE id = ?", (CALL_ID,)
+    ).fetchone()
+    assert row["status"] == "FAILED"

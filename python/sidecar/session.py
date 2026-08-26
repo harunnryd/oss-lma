@@ -275,6 +275,18 @@ class Session:
                 await self._send(error_frame(self.call_id, "STT_STREAM_RESET"))
                 return
 
+    async def _fail_meeting(self, exc: Exception) -> None:
+        logger.error("reconnect budget exhausted for call %s: %s", self.call_id, exc)
+        if self.db is not None:
+            self.db.write({"EventType": "END", "CallId": self.call_id})
+            self.db.write_meeting_failed(
+                {"EventType": "FAILED", "CallId": self.call_id, "Reason": str(exc)}
+            )
+        try:
+            await self.connection.close(1013, "stt-reconnect-exhausted")
+        except Exception:
+            logger.exception("failed to close connection for call %s", self.call_id)
+
     async def _reject_invalid_frame(self) -> None:
         await self._send(error_frame(self.call_id, INVALID_FRAME_CODE, INVALID_FRAME_CONTEXT))
         await self.connection.close(INVALID_FRAME_CLOSE_CODE, "invalid-frame")
