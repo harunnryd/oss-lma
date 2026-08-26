@@ -83,12 +83,19 @@ def sine_chunk(sample_rate: int, caller_freq: int, agent_freq: int) -> bytes:
     return bytes(frames)
 
 
-async def spawn_sidecar(engine_factory):
+async def spawn_sidecar(engine_factory, *, record_meeting: bool = False):
     from sidecar.server import run_server
 
     sink = io.StringIO()
     stop = asyncio.Event()
-    task = asyncio.create_task(run_server(engine_factory, stop=stop, ready_sink=sink))
+    task = asyncio.create_task(
+        run_server(
+            engine_factory,
+            stop=stop,
+            ready_sink=sink,
+            record_meeting=record_meeting,
+        )
+    )
     await eventually(lambda: "SIDECAR_READY" in sink.getvalue())
     match = READY_LINE.fullmatch(sink.getvalue())
     assert match is not None

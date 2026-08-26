@@ -135,3 +135,39 @@ async def test_session_runs_over_real_socket():
     finally:
         stop.set()
         await task
+
+
+async def test_run_server_accepts_db_writer_and_record_meeting_kwargs():
+    stop = asyncio.Event()
+    sink = io.StringIO()
+    task = asyncio.create_task(
+        run_server(
+            lambda ctx: ScriptedEngine([]),
+            stop=stop,
+            ready_sink=sink,
+            db_writer=None,
+            record_meeting=False,
+        )
+    )
+    try:
+        await eventually(lambda: READY_LINE.fullmatch(sink.getvalue()) is not None)
+        assert READY_LINE.fullmatch(sink.getvalue()) is not None
+    finally:
+        stop.set()
+        port, token = await task
+    assert isinstance(port, int)
+    assert re.fullmatch(r"[0-9a-f]{32}", token) is not None
+
+
+async def test_record_meeting_flag_threads_through_to_session():
+    stop, task, port, token = await spawn_sidecar(
+        lambda ctx: ScriptedEngine([]),
+        record_meeting=True,
+    )
+    try:
+        async with connect(f"ws://127.0.0.1:{port}/ws?token={token}") as ws:
+            await ws.send(json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000}))
+            await eventually(lambda: True)
+    finally:
+        stop.set()
+        await task
