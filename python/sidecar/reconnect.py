@@ -1,3 +1,4 @@
+import functools
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -18,6 +19,7 @@ class ReconnectPolicy:
     backoff_ceiling_ms: int
 
 
+@functools.lru_cache(maxsize=1)
 def load_reconnect_policy() -> ReconnectPolicy:
     errors_path = Path(__file__).resolve().parents[2] / "contracts" / "errors.yaml"
     doc = yaml.safe_load(errors_path.read_text(encoding="utf-8"))
@@ -43,12 +45,12 @@ class ReconnectState:
     def record_failure(self, now_ms: int) -> None:
         self.consecutive_failures += 1
         self.last_failure_at_ms = now_ms
-        backoff = _next_backoff(
+        policy = load_reconnect_policy()
+        self.next_backoff_ms = _next_backoff(
             self.consecutive_failures,
-            load_reconnect_policy().backoff_start_ms,
-            load_reconnect_policy().backoff_ceiling_ms,
+            policy.backoff_start_ms,
+            policy.backoff_ceiling_ms,
         )
-        self.next_backoff_ms = backoff
 
     def record_success(self) -> None:
         self.consecutive_failures = 0
@@ -56,9 +58,9 @@ class ReconnectState:
         self.next_backoff_ms = 0
 
     def maybe_reset_on_idle(self, now_ms: int) -> None:
-        policy = load_reconnect_policy()
         if self.last_failure_at_ms is None:
             return
+        policy = load_reconnect_policy()
         if (now_ms - self.last_failure_at_ms) >= policy.reset_after_session_seconds * 1000:
             self.record_success()
 
