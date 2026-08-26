@@ -26,11 +26,6 @@ def test_initial_state_has_zero_consecutive_failures():
 
 
 def test_record_failure_increments_and_schedules_first_backoff():
-    state = ReconnectPolicy = __import__("sidecar.reconnect", fromlist=["ReconnectPolicy"]).ReconnectPolicy
-    policy = __import__("sidecar.reconnect", fromlist=["ReconnectPolicy"]).ReconnectPolicy(
-        max_consecutive=5, reset_after_session_seconds=10,
-        backoff_start_ms=500, backoff_ceiling_ms=10000,
-    )
     state = ReconnectState()
     state.record_failure(now_ms=1000)
     assert state.consecutive_failures == 1
@@ -39,10 +34,6 @@ def test_record_failure_increments_and_schedules_first_backoff():
 
 
 def test_record_failure_doubles_backoff_until_ceiling():
-    policy = __import__("sidecar.reconnect", fromlist=["ReconnectPolicy"]).ReconnectPolicy(
-        max_consecutive=5, reset_after_session_seconds=10,
-        backoff_start_ms=500, backoff_ceiling_ms=10000,
-    )
     state = ReconnectState()
     for i, expected in enumerate([500, 1000, 2000, 4000, 8000], start=1):
         state.record_failure(now_ms=1000 * i)
