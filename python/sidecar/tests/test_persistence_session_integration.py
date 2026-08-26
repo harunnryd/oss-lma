@@ -553,3 +553,61 @@ async def test_session_survives_audio_during_reconnect_backoff(tmp_path):
     assert connection.closes == []
     assert session.pump_task is not None and not session.pump_task.done()
 
+
+def _one_word_result(result_id: str, start: float, end: float) -> dict:
+    return {
+        "result_id": result_id,
+        "is_partial": False,
+        "items": [
+            WordItem(
+                content="hello",
+                type="pronunciation",
+                start_time=start,
+                end_time=end,
+                speaker="spk_0",
+                channel="CALLER",
+                result_id=result_id,
+            )
+        ],
+    }
+
+
+async def test_start_resumes_timeline_after_crash_without_clean_end(tmp_path):
+    db_conn = _bootstrap(tmp_path)
+    start_frame = json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000})
+
+    first_connection = MemoryConnection()
+    first_engine = ScriptedEngine([_one_word_result("r1", 0.0, 3.0)])
+    first_session = Session(first_connection, lambda ctx: first_engine, db=SqliteWriter(db_conn))
+    await first_session.on_text(start_frame)
+    await first_session.on_binary(bytes(19200))
+    await eventually(lambda: len(first_connection.sent) == 1)
+    assert first_session.time_offset_ms == 0
+    first_session.pump_task.cancel()
+    await asyncio.gather(first_session.pump_task, return_exceptions=True)
+
+    crashed = db_conn.execute(
+        "SELECT status, time_offset_ms, ended_at FROM meetings WHERE id = ?", (CALL_ID,)
+    ).fetchone()
+    assert crashed["status"] == "RECORDING"
+    assert crashed["time_offset_ms"] == 0
+    assert crashed["ended_at"] is None
+
+    second_connection = MemoryConnection()
+    second_engine = ScriptedEngine([_one_word_result("r2", 0.0, 2.0)])
+    second_session = Session(second_connection, lambda ctx: second_engine, db=SqliteWriter(db_conn))
+    await second_session.on_text(start_frame)
+    assert second_session.time_offset_ms == 3000
+    await second_session.on_binary(bytes(19200))
+    await eventually(lambda: len(second_connection.sent) == 1)
+
+    rows = db_conn.execute(
+        "SELECT segment_id, start_ms, end_ms FROM segments WHERE meeting_id = ? "
+        "ORDER BY start_ms",
+        (CALL_ID,),
+    ).fetchall()
+    assert [(r["start_ms"], r["end_ms"]) for r in rows] == [(0, 3000), (3000, 5000)]
+    wire = json.loads(second_connection.sent[0])
+    assert wire["StartTime"] == 3.0
+    assert wire["EndTime"] == 5.0
+    await second_session.on_text(json.dumps({"EventType": "END", "CallId": CALL_ID}))

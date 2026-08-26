@@ -173,7 +173,9 @@ class Session:
             self.recorder = WavRecordingSink(wav_path)
         if self.db is not None:
             ev = {"EventType": "START", "CallId": frame.call_id}
-            self.time_offset_ms = self.db.write_meeting_started(ev, return_offset=True) or 0
+            stored_offset = self.db.write_meeting_started(ev, return_offset=True) or 0
+            resumed_offset = self.db.read_max_segment_end_ms(frame.call_id) or 0
+            self.time_offset_ms = max(stored_offset, resumed_offset)
 
     async def _close_session(self, drain: bool) -> None:
         if self.stream is None:
