@@ -171,3 +171,29 @@ def test_unmatched_event_type_raises_value_error(tmp_path):
 
     with pytest.raises(ValueError):
         dispatch_write(conn, {"EventType": "VP_COMMAND", "TaskId": "t-1", "Command": "CLICK"})
+
+
+def test_write_meeting_started_preserves_existing_row(tmp_path):
+    conn = _bootstrap(tmp_path)
+    write_meeting_started(conn, {"EventType": "START", "CallId": "m-1", "SamplingRate": 48000})
+    conn.execute("UPDATE meetings SET time_offset_ms = ? WHERE id = ?", (7777, "m-1"))
+    conn.commit()
+    second = write_meeting_started(
+        conn, {"EventType": "START", "CallId": "m-1", "SamplingRate": 48000}
+    )
+    assert second is None
+    row = conn.execute("SELECT time_offset_ms FROM meetings WHERE id = ?", ("m-1",)).fetchone()
+    assert row["time_offset_ms"] == 7777
+
+
+def test_write_meeting_started_returns_offset_when_requested(tmp_path):
+    conn = _bootstrap(tmp_path)
+    write_meeting_started(conn, {"EventType": "START", "CallId": "m-1", "SamplingRate": 48000})
+    conn.execute("UPDATE meetings SET time_offset_ms = 4321 WHERE id = 'm-1'")
+    conn.commit()
+    offset = write_meeting_started(
+        conn,
+        {"EventType": "START", "CallId": "m-1", "SamplingRate": 48000},
+        return_offset=True,
+    )
+    assert offset == 4321

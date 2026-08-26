@@ -11,13 +11,21 @@ from sidecar.storage.writer_boundary import (
 )
 
 
-def write_meeting_started(conn: sqlite3.Connection, ev: dict) -> None:
+def write_meeting_started(
+    conn: sqlite3.Connection, ev: dict, *, return_offset: bool = False
+) -> int | None:
     values = normalize_meeting_started(ev)
     conn.execute(
-        "INSERT OR REPLACE INTO meetings (id, source, started_at) VALUES (?, ?, ?)",
+        "INSERT OR IGNORE INTO meetings (id, source, started_at) VALUES (?, ?, ?)",
         values,
     )
     conn.commit()
+    if not return_offset:
+        return None
+    row = conn.execute(
+        "SELECT time_offset_ms FROM meetings WHERE id = ?", (ev["CallId"],)
+    ).fetchone()
+    return row["time_offset_ms"] if row else 0
 
 
 def write_meeting_ended(conn: sqlite3.Connection, ev: dict) -> None:
