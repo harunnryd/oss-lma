@@ -80,7 +80,6 @@ def test_second_migration_allows_negative_is_partial(tmp_path):
     row = conn.execute("SELECT is_partial FROM segments").fetchone()
     assert row["is_partial"] == -1
 
-
 def test_third_migration_adds_reconnect_columns(tmp_path):
     conn = open_db(tmp_path / "lma.db")
     apply_migrations(conn, _storage_root() / "migrations")

@@ -145,7 +145,10 @@ def test_write_thinking_step_inserts(tmp_path):
 def test_write_meeting_ended_updates_status(tmp_path):
     conn = _bootstrap(tmp_path)
     write_meeting_started(conn, {"EventType": "START", "CallId": "m-1", "SamplingRate": 48000})
-    write_meeting_ended(conn, {"EventType": "END", "CallId": "m-1", "CreatedAt": "2026-08-26T10:00:00Z"})
+    started_at = conn.execute("SELECT started_at FROM meetings WHERE id = 'm-1'").fetchone()["started_at"]
+    from datetime import datetime, UTC
+    ended_iso = datetime.fromtimestamp((started_at + 1000) / 1000, tz=UTC).isoformat().replace("+00:00", "Z")
+    write_meeting_ended(conn, {"EventType": "END", "CallId": "m-1", "CreatedAt": ended_iso})
     row = conn.execute("SELECT status, ended_at FROM meetings WHERE id = 'm-1'").fetchone()
     assert row["status"] == "COMPLETED"
     assert row["ended_at"] > 0
