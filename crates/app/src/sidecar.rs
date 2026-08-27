@@ -9,7 +9,7 @@ use std::{
 
 use serde::Serialize;
 
-use crate::settings::ProviderKind;
+use crate::settings::{ProviderKind, ProviderSettings};
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 const EXTRA_READINESS_WINDOW: Duration = Duration::from_millis(30);
@@ -92,6 +92,8 @@ pub(crate) struct SidecarSupervisor {
 struct SupervisorState {
     child: Option<Child>,
     endpoint: Option<SidecarEndpoint>,
+    config: Option<RuntimeConfig>,
+    last_error: Option<SupervisorError>,
 }
 
 #[derive(Debug)]
@@ -126,6 +128,15 @@ impl std::error::Error for SupervisorError {}
 
 #[allow(dead_code)]
 impl SidecarSupervisor {
+    pub(crate) fn runtime_config(settings: ProviderSettings, api_key: String) -> RuntimeConfig {
+        RuntimeConfig {
+            provider: settings.provider,
+            model: settings.model,
+            language: settings.language,
+            azure_region: settings.azure_region,
+            api_key: SecretString::new(api_key),
+        }
+    }
     pub(crate) fn new(command: SidecarCommand) -> Self {
         Self::with_command(command)
     }
@@ -136,12 +147,15 @@ impl SidecarSupervisor {
             state: Mutex::new(SupervisorState {
                 child: None,
                 endpoint: None,
+                config: None,
+                last_error: None,
             }),
         }
     }
 
     pub(crate) fn spawn(&self, config: RuntimeConfig) -> Result<SidecarEndpoint, SupervisorError> {
         let mut child = self.command.start()?;
+        forward_stderr(child.stderr.take());
         if let Err(error) = write_runtime_config(child.stdin.take(), &config) {
             terminate(&mut child);
             return Err(error);
@@ -154,7 +168,6 @@ impl SidecarSupervisor {
                 return Err(error);
             }
         };
-        forward_stderr(child.stderr.take());
 
         let mut state = self.state.lock().unwrap();
         if let Some(mut previous) = state.child.take() {
@@ -162,6 +175,8 @@ impl SidecarSupervisor {
         }
         state.endpoint = Some(endpoint.clone());
         state.child = Some(child);
+        state.config = Some(config);
+        state.last_error = None;
         Ok(endpoint)
     }
 
@@ -175,7 +190,18 @@ impl SidecarSupervisor {
             state.child = None;
             state.endpoint = None;
         }
-        state.endpoint.clone()
+        if state.endpoint.is_some() {
+            return state.endpoint.clone();
+        }
+        let config = state.config.clone()?;
+        drop(state);
+        match self.spawn(config) {
+            Ok(endpoint) => Some(endpoint),
+            Err(error) => {
+                self.state.lock().unwrap().last_error = Some(error);
+                None
+            }
+        }
     }
 
     pub(crate) fn respawn(
@@ -189,9 +215,13 @@ impl SidecarSupervisor {
     pub(crate) fn shutdown(&self) -> Result<(), SupervisorError> {
         let mut state = self.state.lock().unwrap();
         state.endpoint = None;
+        state.config = None;
         if let Some(mut child) = state.child.take() {
-            child.kill().map_err(SupervisorError::Shutdown)?;
+            let kill_error = child.kill().err();
             child.wait().map_err(SupervisorError::Shutdown)?;
+            if let Some(error) = kill_error {
+                return Err(SupervisorError::Shutdown(error));
+            }
         }
         Ok(())
     }
@@ -310,8 +340,8 @@ fn parse_readiness(line: &str) -> Option<SidecarEndpoint> {
 fn forward_stderr(stderr: Option<std::process::ChildStderr>) {
     if let Some(stderr) = stderr {
         thread::spawn(move || {
-            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                eprintln!("sidecar stderr: {line}");
+            for _ in BufReader::new(stderr).lines().map_while(Result::ok) {
+                eprintln!("sidecar stderr event");
             }
         });
     }
@@ -324,6 +354,8 @@ fn terminate(child: &mut Child) {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::{RuntimeConfig, SecretString, SidecarCommand, SidecarSupervisor, SupervisorError};
     use crate::settings::ProviderKind;
 
@@ -375,6 +407,32 @@ mod tests {
 
         assert!(supervisor.endpoint().is_none());
         assert!(supervisor.child_has_exited());
+    }
+
+    #[test]
+    fn shutdown_reaps_a_child_that_exited_before_kill() {
+        let supervisor = SidecarSupervisor::with_command(shell(
+            "printf 'SIDECAR_READY port=43123 token=abc123\\n'; exit 0",
+        ));
+        supervisor.spawn(config("provider-secret")).unwrap();
+
+        supervisor.shutdown().unwrap();
+
+        assert!(supervisor.endpoint().is_none());
+    }
+
+    #[test]
+    fn endpoint_respawns_after_the_child_exits() {
+        let supervisor = SidecarSupervisor::with_command(shell(
+            "printf 'SIDECAR_READY port=43123 token=abc123\\n'; exit 0",
+        ));
+        supervisor.spawn(config("provider-secret")).unwrap();
+
+        std::thread::sleep(Duration::from_millis(10));
+        let endpoint = supervisor.endpoint().expect("sidecar is respawned");
+
+        assert_eq!(endpoint.port(), 43123);
+        supervisor.shutdown().unwrap();
     }
 
     #[test]
