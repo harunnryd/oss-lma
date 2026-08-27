@@ -4,30 +4,35 @@ title: "Quick Start Guide"
 
 # Quick Start Guide
 
-Your first meeting in five minutes using [desktop capture](desktop-capture-app.md).
+Your first local meeting in five minutes using [desktop capture](desktop-capture-app.md).
 
 ## 1. Launch
 
 Open **oss-lma** from your Applications folder (or run `cargo tauri dev`
-from a source checkout). The menu-bar / system-tray icon appears; the main
-window opens on the live view.
+from a source checkout). The main window opens on the capture and live
+transcript view. The app starts its local Python sidecar automatically; its
+localhost port and token stay inside the desktop process.
 
 ## 2. Configure providers
 
-Settings → **Providers**: pick your STT provider and LLM provider, paste
-API keys. Keys go straight into the OS keychain. See
-[Prerequisites & Installation](prerequisites-and-install.md) for which keys
-are required.
+In **Transcription provider**, select Deepgram, enter the model and language,
+and save your API key. The key is written directly to the OS keychain; the UI
+only shows whether a key is present. AssemblyAI and Azure use the same fields
+once their adapter credentials are configured. LLM and assistant settings are
+not part of this capture increment. See [Prerequisites & Installation](prerequisites-and-install.md)
+for provider setup.
 
 ## 3. Pick devices
 
-Settings → **Capture**: choose your microphone and confirm the system-audio
-source. Levels show on the VU meters as soon as any audio plays.
+Use **Open microphone settings** and **Open screen recording settings** when
+the access status is unknown or denied. The macOS system-audio source follows
+the default output; the selected microphone is shown by the capture backend.
+Levels appear as soon as audio is available.
 
 ## 4. Start a meeting
 
-Join your meeting from any app — Zoom, Teams, Meet in a browser, a phone
-bridge, anything that plays through your speakers — then press **Record**:
+Join your meeting from any app — Zoom, Teams, Meet in a browser, or a phone
+bridge — then press **Start meeting**:
 
 - Your microphone is transcribed as the **My Mic** channel.
 - Everything else in the room is transcribed as the **Meeting Audio**
@@ -35,15 +40,13 @@ bridge, anything that plays through your speakers — then press **Record**:
 - Live transcript streams into the window with speaker labels and
   timestamps.
 
-## 5. Ask questions while it runs
+## 5. Pause or stop
 
-Open the chat panel and ask about what was said — the assistant reads the
-live transcript through its tools ([Meeting Assistant](meeting-assistant.md)).
-Shortcut buttons give you one-click summaries and action items.
+Use **Pause** to keep the socket and synchronized audio cadence alive while
+discarding audio server-side. Press **Stop** to send `END`, finalize the
+transcript, close the WAV writer, and return to Idle. The recording is stored
+under the app data directory documented in [Prerequisites & Installation](prerequisites-and-install.md#logs-and-data-locations).
 
-## 6. End and review
-
-Press **Stop**. The meeting finalizes automatically: summary sections are
-generated, action items are extracted, and everything becomes searchable
-([Meetings Query Tool](meetings-query-tool.md)). Find it under **Meetings**
-with its recording for playback.
+Assistant chat, summaries, action items, history search, and virtual
+participant flows are documented separately and will be enabled by their
+respective product increments.
