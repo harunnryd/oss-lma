@@ -117,7 +117,11 @@ class FakeResultStream:
             self._pending.append({"result_id": result_id, "is_partial": False, "items": items})
         else:
             self._pending.append(
-                {"result_id": result_id, "is_partial": True, "items": list(self._buffered[result_id])}
+                {
+                    "result_id": result_id,
+                    "is_partial": True,
+                    "items": list(self._buffered[result_id]),
+                }
             )
         self._new_item.set()
 

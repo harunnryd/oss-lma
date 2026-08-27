@@ -49,7 +49,11 @@ def build_url(cfg: DeepgramConfig) -> str:
 
 
 def _word_type(word: str, punctuated_word: str | None) -> str:
-    if punctuated_word and punctuated_word != word and punctuated_word.endswith(_PUNCTUATION_SUFFIXES):
+    if (
+        punctuated_word
+        and punctuated_word != word
+        and punctuated_word.endswith(_PUNCTUATION_SUFFIXES)
+    ):
         return "punctuation"
     return "pronunciation"
 
@@ -164,9 +168,6 @@ class DeepgramEngine:
         while True:
             await self.sleep(max(0.05, self.interval_s / 10))
             now = self.clock()
-            if (
-                now - stream.last_audio_at >= self.interval_s
-                and now - last_sent >= self.interval_s
-            ):
+            if now - stream.last_audio_at >= self.interval_s and now - last_sent >= self.interval_s:
                 await stream.conn.send(json.dumps({"type": "KeepAlive"}))
                 last_sent = now

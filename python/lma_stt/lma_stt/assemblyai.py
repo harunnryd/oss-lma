@@ -1,5 +1,4 @@
 import asyncio
-import contextlib
 import json
 import time
 from collections.abc import Awaitable, Callable
@@ -120,12 +119,26 @@ class AssemblyAIResultStream:
 def deinterleave_s16le(pcm: bytes) -> tuple[bytes, bytes]:
     if len(pcm) % 4:
         raise ValueError("stereo s16le input must contain complete frames")
-    return pcm[0::4] + pcm[1::4], pcm[2::4] + pcm[3::4]
+    return (
+        b"".join(pcm[index : index + 2] for index in range(0, len(pcm), 4)),
+        b"".join(pcm[index + 2 : index + 4] for index in range(0, len(pcm), 4)),
+    )
+
+
+def _connection_error(exc: Exception) -> Exception:
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", getattr(exc, "status_code", None))
+    message = f"connection failed: {type(exc).__name__}: {exc}"
+    if status in (401, 403):
+        return ProviderAuthError(message)
+    return ProviderResetError(message)
 
 
 class _ChannelResultStream:
     def __init__(self, streams: list[AssemblyAIResultStream]):
         self.streams = streams
+        self._pending: dict[asyncio.Task[Result], AssemblyAIResultStream] = {}
+        self._ready: list[Result] = []
 
     async def feed(self, pcm: bytes) -> None:
         for stream, channel_pcm in zip(self.streams, deinterleave_s16le(pcm), strict=True):
@@ -138,14 +151,16 @@ class _ChannelResultStream:
         return self
 
     async def __anext__(self) -> Result:
-        tasks = [asyncio.create_task(anext(stream)) for stream in self.streams]
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for task in pending:
-            task.cancel()
-        for task in pending:
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-        return next(iter(done)).result()
+        if self._ready:
+            return self._ready.pop(0)
+        if not self._pending:
+            self._pending = {asyncio.create_task(anext(stream)): stream for stream in self.streams}
+        done, _ = await asyncio.wait(self._pending, return_when=asyncio.FIRST_COMPLETED)
+        for task in sorted(done, key=lambda item: self.streams.index(self._pending[item])):
+            stream = self._pending.pop(task)
+            self._ready.append(task.result())
+            self._pending[asyncio.create_task(anext(stream))] = stream
+        return self._ready.pop(0)
 
 
 class AssemblyAIEngine:
@@ -162,9 +177,13 @@ class AssemblyAIEngine:
     async def start(self, ctx: MeetingContext) -> _ChannelResultStream:
         streams = []
         for channel in ("CALLER", "AGENT"):
-            conn = await self._connect(
-                build_url(self.config, ctx["sample_rate"]), {"Authorization": self.config.api_key}
-            )
+            try:
+                conn = await self._connect(
+                    build_url(self.config, ctx["sample_rate"]),
+                    {"Authorization": self.config.api_key},
+                )
+            except Exception as exc:
+                raise _connection_error(exc) from exc
             status = conn.response.status_code
             if status in (401, 403):
                 raise ProviderAuthError(f"handshake rejected with HTTP {status}")
