@@ -1,13 +1,22 @@
 pub mod capture_state;
 pub mod settings;
+pub(crate) mod sidecar;
 pub mod commands {
     pub mod capture;
 }
 
+use std::sync::Arc;
+
 use tauri::{Manager, Runtime};
 
+use crate::sidecar::{SidecarCommand, SidecarSupervisor};
+
 pub fn initialize_capture<R: Runtime>(app: &tauri::App<R>) -> Result<(), String> {
-    let capture = commands::capture::AppCapture::from_tauri(app.handle())?;
+    let sidecar = Arc::new(SidecarSupervisor::new(SidecarCommand::bundled()));
+    if !app.manage(sidecar.clone()) {
+        return Err("sidecar supervisor has already been initialized".to_owned());
+    }
+    let capture = commands::capture::AppCapture::from_tauri(app.handle(), sidecar)?;
     if app.manage(capture) {
         Ok(())
     } else {
