@@ -1,0 +1,4 @@
+[
+  {"result_id":"begin-mini-turn-7","is_partial":true,"items":[{"content":"hello","type":"pronunciation","start_time":0.12,"end_time":0.42,"speaker":null,"channel":"CALLER","result_id":"begin-mini-turn-7"}]},
+  {"result_id":"begin-mini-turn-7","is_partial":false,"items":[{"content":"Hello.","type":"punctuation","start_time":0.12,"end_time":0.42,"speaker":"spk_A","channel":"CALLER","result_id":"begin-mini-turn-7"}]}
+]

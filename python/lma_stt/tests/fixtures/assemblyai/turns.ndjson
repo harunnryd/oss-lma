@@ -1,0 +1,3 @@
+{"type":"Begin","id":"begin-mini"}
+{"type":"Turn","turn_order":7,"end_of_turn":false,"transcript":"hello","words":[{"text":"hello","start":120,"end":420}]}
+{"type":"Turn","turn_order":7,"end_of_turn":true,"transcript":"Hello.","words":[{"text":"Hello.","start":120,"end":420,"speaker":"A"}]}
