@@ -91,16 +91,28 @@ def downsample_mono_s16le(pcm: bytes, input_rate: int) -> bytes:
 def deinterleave_s16le(pcm: bytes) -> tuple[bytes, bytes]:
     if len(pcm) % 4:
         raise ValueError("stereo s16le input must contain complete frames")
-    return pcm[0::4] + pcm[1::4], pcm[2::4] + pcm[3::4]
+    return (
+        b"".join(pcm[index : index + 2] for index in range(0, len(pcm), 4)),
+        b"".join(pcm[index + 2 : index + 4] for index in range(0, len(pcm), 4)),
+    )
 
 
-def wav_header() -> bytes:
+def _connection_error(exc: Exception) -> Exception:
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", getattr(exc, "status_code", None))
+    message = f"connection failed: {type(exc).__name__}: {exc}"
+    if status in (401, 403):
+        return ProviderAuthError(message)
+    return ProviderResetError(message)
+
+
+def wav_header(data_size: int) -> bytes:
     buffer = BytesIO()
     with wave.open(buffer, "wb") as output:
         output.setnchannels(1)
         output.setsampwidth(2)
         output.setframerate(16_000)
-        output.writeframes(b"")
+        output.writeframes(b"\0" * data_size)
     return buffer.getvalue()
 
 
@@ -117,9 +129,17 @@ class AzureResultStream:
         self.input_rate = input_rate
         self.clock = clock
         self._closing = False
+        self.request_id = uuid.uuid4().hex
+        self.first_audio = True
 
     async def feed(self, pcm: bytes) -> None:
-        await self.conn.send(downsample_mono_s16le(pcm, self.input_rate))
+        audio = downsample_mono_s16le(pcm, self.input_rate)
+        header = (
+            f"Path: audio\r\nX-RequestId: {self.request_id}\r\nContent-Type: audio/x-wav\r\n\r\n"
+        ).encode()
+        body = (wav_header(len(audio)) if self.first_audio else b"") + audio
+        self.first_audio = False
+        await self.conn.send(header + body)
 
     async def close(self) -> None:
         if self._closing:
@@ -140,8 +160,30 @@ class AzureResultStream:
                 raise ProviderResetError(f"{type(exc).__name__}: {exc}") from exc
             if isinstance(raw, bytes):
                 continue
-            _, _, body = raw.partition("\r\n\r\n")
+            headers, _, body = raw.partition("\r\n\r\n")
             message = json.loads(body or raw)
+            if "Path: speech.hypothesis" in headers:
+                offset = int(message.get("Offset", 0))
+                duration = int(message.get("Duration", 0))
+                result_id = str(message.get("Id", f"{offset}-{duration}"))
+                text = str(message.get("Text", ""))
+                return {
+                    "result_id": result_id,
+                    "is_partial": True,
+                    "items": [
+                        WordItem(
+                            text,
+                            "pronunciation",
+                            offset / _TICKS_PER_SECOND,
+                            (offset + duration) / _TICKS_PER_SECOND,
+                            None,
+                            self.channel,
+                            result_id,
+                        )
+                    ]
+                    if text
+                    else [],
+                }
             if message.get("RecognitionStatus") == "Success":
                 return map_message(message, channel=self.channel)
             if (
@@ -150,6 +192,35 @@ class AzureResultStream:
             ):
                 raise ProviderResetError(str(message))
         raise StopAsyncIteration
+
+
+class _AzureChannelResultStream:
+    def __init__(self, streams: list[AzureResultStream]):
+        self.streams = streams
+        self._pending: dict[asyncio.Task[Result], AzureResultStream] = {}
+        self._ready: list[Result] = []
+
+    async def feed(self, pcm: bytes) -> None:
+        for stream, channel_pcm in zip(self.streams, deinterleave_s16le(pcm), strict=True):
+            await stream.feed(channel_pcm)
+
+    async def close(self) -> None:
+        await asyncio.gather(*(stream.close() for stream in self.streams))
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self) -> Result:
+        if self._ready:
+            return self._ready.pop(0)
+        if not self._pending:
+            self._pending = {asyncio.create_task(anext(stream)): stream for stream in self.streams}
+        done, _ = await asyncio.wait(self._pending, return_when=asyncio.FIRST_COMPLETED)
+        for task in sorted(done, key=lambda item: self.streams.index(self._pending[item])):
+            stream = self._pending.pop(task)
+            self._ready.append(task.result())
+            self._pending[asyncio.create_task(anext(stream))] = stream
+        return self._ready.pop(0)
 
 
 class AzureEngine:
@@ -163,17 +234,7 @@ class AzureEngine:
         self._connect = connect or default_connect
         self.clock = clock
 
-    async def start(self, ctx: MeetingContext) -> AzureResultStream:
-        connection_id = uuid.uuid4().hex
-        conn = await self._connect(
-            build_url(self.config, connection_id),
-            {"Ocp-Apim-Subscription-Key": self.config.api_key},
-        )
-        status = conn.response.status_code
-        if status in (401, 403):
-            raise ProviderAuthError(f"handshake rejected with HTTP {status}")
-        if status >= 400:
-            raise ProviderResetError(f"handshake failed with HTTP {status}")
+    async def start(self, ctx: MeetingContext) -> _AzureChannelResultStream:
         config_frame = {
             "context": {
                 "system": {"version": "1.0.0", "name": "SpeechSDK"},
@@ -181,9 +242,24 @@ class AzureEngine:
             },
             "recognition": {"outputFormat": "Detailed"},
         }
-        await conn.send(
-            "Path: speech.config\r\nContent-Type: application/json\r\n\r\n"
-            + json.dumps(config_frame)
-        )
-        await conn.send(wav_header())
-        return AzureResultStream(conn, "CALLER", ctx["sample_rate"], clock=self.clock)
+        streams = []
+        for channel in ("CALLER", "AGENT"):
+            connection_id = uuid.uuid4().hex
+            try:
+                conn = await self._connect(
+                    build_url(self.config, connection_id),
+                    {"Ocp-Apim-Subscription-Key": self.config.api_key},
+                )
+            except Exception as exc:
+                raise _connection_error(exc) from exc
+            status = conn.response.status_code
+            if status in (401, 403):
+                raise ProviderAuthError(f"handshake rejected with HTTP {status}")
+            if status >= 400:
+                raise ProviderResetError(f"handshake failed with HTTP {status}")
+            await conn.send(
+                "Path: speech.config\r\nContent-Type: application/json\r\n\r\n"
+                + json.dumps(config_frame)
+            )
+            streams.append(AzureResultStream(conn, channel, ctx["sample_rate"], clock=self.clock))
+        return _AzureChannelResultStream(streams)
