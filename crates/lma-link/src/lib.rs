@@ -1,10 +1,18 @@
 pub use lma_capture::StereoChunk;
 
+mod client;
+mod protocol;
+mod reconnect;
+
+pub use client::{LinkClient, LinkError, Result};
+pub use reconnect::ReconnectBuffer;
+
 /// Commands controlling the sidecar audio link.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LinkCommand {
     Start,
     Pause,
+    Resume,
     End,
 }
 
