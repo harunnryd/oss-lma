@@ -1,8 +1,8 @@
 use std::{collections::HashMap, time::Duration};
 
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use jsonschema::Validator;
-use lma_link::{LinkClient, LinkEvent};
+use lma_link::{ErrorCode, LinkClient, LinkEvent};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::{net::TcpListener, sync::mpsc, time::timeout};
@@ -10,18 +10,20 @@ use tokio_tungstenite::{accept_async, tungstenite::Message};
 
 const CALL_ID: &str = "123e4567-e89b-12d3-a456-426614174000";
 
-fn control_validator() -> Validator {
+fn event_validator() -> Validator {
     let mut schema: Value =
         serde_json::from_str(include_str!("../../../contracts/events.schema.json"))
             .expect("event schema parses");
-    schema["$defs"]
-        .as_object_mut()
-        .expect("schema definitions")
-        .remove("Error");
-    schema["oneOf"]
-        .as_array_mut()
-        .expect("schema event variants")
-        .retain(|event| event["$ref"] != "#/$defs/Error");
+    let catalog: ErrorCatalog =
+        serde_yaml::from_str(include_str!("../../../contracts/errors.yaml"))
+            .expect("error catalog parses");
+    schema["$defs"]["Error"]["properties"]["Code"] = json!({
+        "enum": catalog
+            .errors
+            .into_iter()
+            .map(|error| error.code)
+            .collect::<Vec<_>>()
+    });
     jsonschema::validator_for(&schema).expect("event schema compiles")
 }
 
@@ -76,7 +78,7 @@ async fn emitted_control_events_satisfy_the_canonical_schema() {
     sidecar.await.expect("fake sidecar completes");
 
     let events = [start, pause, resume, end];
-    let validator = control_validator();
+    let validator = event_validator();
     for event in &events {
         let errors = validator.iter_errors(event).collect::<Vec<_>>();
         assert!(
@@ -99,6 +101,69 @@ async fn emitted_control_events_satisfy_the_canonical_schema() {
             json!({"EventType": "RESUME", "CallId": CALL_ID}),
             json!({"EventType": "END", "CallId": CALL_ID}),
         ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn canonical_error_frame_emits_a_structured_link_event() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("fake sidecar binds");
+    let port = listener.local_addr().expect("listener address").port();
+    let (frame_tx, mut frame_rx) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("link connects");
+        let mut socket = accept_async(stream).await.expect("websocket upgrades");
+        socket
+            .next()
+            .await
+            .expect("START arrives")
+            .expect("valid START");
+        let frame = json!({
+            "EventType": "ERROR",
+            "CallId": CALL_ID,
+            "Code": "LINK_DISCONNECTED",
+            "Context": {"reason": "invalid-frame"}
+        });
+        let serialized = serde_json::to_string(&frame).expect("ERROR frame serializes");
+        frame_tx
+            .send(serialized.clone())
+            .expect("test receiver remains active");
+        socket
+            .send(Message::Text(serialized.into()))
+            .await
+            .expect("ERROR frame is sent");
+    });
+
+    let client = LinkClient::new();
+    let mut events = client.subscribe();
+    client
+        .start(CALL_ID, port, "test token", 48_000, false)
+        .await
+        .expect("link start is accepted");
+    assert_eq!(
+        timeout(Duration::from_secs(2), events.recv())
+            .await
+            .expect("connected event arrives")
+            .expect("event receiver remains active"),
+        LinkEvent::Connected
+    );
+
+    let serialized = frame_rx.recv().await.expect("serialized ERROR is captured");
+    let frame: Value = serde_json::from_str(&serialized).expect("ERROR frame is JSON");
+    let validator = event_validator();
+    let errors = validator.iter_errors(&frame).collect::<Vec<_>>();
+    assert!(errors.is_empty(), "invalid ERROR frame {frame}: {errors:?}");
+    assert_eq!(
+        timeout(Duration::from_secs(2), events.recv())
+            .await
+            .expect("structured error arrives")
+            .expect("event receiver remains active"),
+        LinkEvent::Error {
+            call_id: CALL_ID.into(),
+            code: ErrorCode::LinkDisconnected,
+            context: json!({"reason": "invalid-frame"}),
+        }
     );
 }
 
@@ -155,7 +220,7 @@ struct ErrorContract {
 }
 
 #[test]
-fn emitted_capture_and_link_errors_have_canonical_recovery_contracts() {
+fn capture_and_link_errors_have_canonical_recovery_contracts() {
     let catalog: ErrorCatalog =
         serde_yaml::from_str(include_str!("../../../contracts/errors.yaml"))
             .expect("error catalog parses");
@@ -164,6 +229,13 @@ fn emitted_capture_and_link_errors_have_canonical_recovery_contracts() {
         .into_iter()
         .map(|error| (error.code.clone(), error))
         .collect::<HashMap<_, _>>();
+    assert_eq!(
+        ErrorCode::ALL
+            .into_iter()
+            .map(ErrorCode::as_str)
+            .collect::<std::collections::HashSet<_>>(),
+        errors.keys().map(String::as_str).collect()
+    );
 
     let permission = &errors["CAPTURE_PERMISSION_DENIED"];
     assert_eq!(permission.source, "rust");

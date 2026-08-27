@@ -6,6 +6,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(target_os = "macos")]
+use app::commands::capture::NativePipeline;
 use app::{
     capture_state::{CapturePhase, SourceReadiness},
     commands::capture::{
@@ -44,8 +46,6 @@ impl Drop for TestDirectory {
 
 struct FakeMacSources {
     readiness: SourceReadiness,
-    system_rebuilds: usize,
-    microphone_rebuilds: usize,
 }
 
 impl Default for FakeMacSources {
@@ -55,18 +55,7 @@ impl Default for FakeMacSources {
                 system: false,
                 microphone: false,
             },
-            system_rebuilds: 0,
-            microphone_rebuilds: 0,
         }
-    }
-}
-
-impl FakeMacSources {
-    fn rebuild_microphone(&mut self) {
-        assert!(self.readiness.system);
-        self.readiness.microphone = false;
-        self.microphone_rebuilds += 1;
-        self.readiness.microphone = true;
     }
 }
 
@@ -82,10 +71,7 @@ struct Pipeline {
 impl Pipeline {
     fn new(readiness: SourceReadiness) -> Self {
         Self {
-            sources: FakeMacSources {
-                readiness,
-                ..FakeMacSources::default()
-            },
+            sources: FakeMacSources { readiness },
             mixer: Mixer::new(),
             recorder: None,
             link: None,
@@ -362,6 +348,90 @@ fn await_link_event(
     });
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn rebuild_event_restarts_only_the_affected_production_source() {
+    use std::{cell::RefCell, rc::Rc, sync::mpsc};
+
+    use lma_capture::macos::{
+        DeviceSelection, MacSource, MonoFrames, NativeStopError, NativeStream, NativeStreamEvents,
+        NativeStreamProvider, SourceEvent, SourceKind,
+    };
+
+    type Actions = Rc<RefCell<Vec<(SourceKind, &'static str)>>>;
+
+    struct TestStream {
+        kind: SourceKind,
+        actions: Actions,
+    }
+
+    impl NativeStream for TestStream {
+        fn stop(&mut self) -> Result<(), NativeStopError> {
+            self.actions.borrow_mut().push((self.kind, "stop"));
+            Ok(())
+        }
+    }
+
+    #[derive(Clone)]
+    struct TestProvider {
+        actions: Actions,
+    }
+
+    impl NativeStreamProvider for TestProvider {
+        fn start(
+            &self,
+            kind: SourceKind,
+            _selection: &DeviceSelection,
+            _frames: mpsc::Sender<MonoFrames>,
+            _events: Arc<dyn NativeStreamEvents>,
+        ) -> Result<Box<dyn NativeStream>, String> {
+            self.actions.borrow_mut().push((kind, "start"));
+            Ok(Box::new(TestStream {
+                kind,
+                actions: self.actions.clone(),
+            }))
+        }
+    }
+
+    let actions = Rc::new(RefCell::new(Vec::new()));
+    let provider = TestProvider {
+        actions: actions.clone(),
+    };
+    let (source_events, events) = mpsc::channel();
+    let (system_frames, _system_receiver) = mpsc::channel();
+    let (microphone_frames, _microphone_receiver) = mpsc::channel();
+    let system =
+        MacSource::with_provider(SourceKind::System, provider.clone(), source_events.clone())
+            .start(DeviceSelection::Default, system_frames);
+    let microphone =
+        MacSource::with_provider(SourceKind::Microphone, provider, source_events.clone())
+            .start(DeviceSelection::Default, microphone_frames);
+    let mut pipeline = NativePipeline::with_sources(
+        CaptureDeviceSelection::default(),
+        system,
+        microphone,
+        events,
+    );
+    actions.borrow_mut().clear();
+
+    source_events
+        .send(SourceEvent::RebuildRequired(SourceKind::Microphone))
+        .expect("rebuild event is injected");
+    pipeline
+        .process_source_events()
+        .expect("affected source rebuilds");
+
+    assert_eq!(
+        *actions.borrow(),
+        [
+            (SourceKind::Microphone, "stop"),
+            (SourceKind::Microphone, "start")
+        ]
+    );
+    assert!(pipeline.source_active(SourceKind::System));
+    assert!(pipeline.source_active(SourceKind::Microphone));
+}
+
 #[test]
 fn permission_preflight_and_source_readiness_block_meeting_resources() {
     for (name, permissions, readiness, expected_error, expected_actions) in [
@@ -480,6 +550,13 @@ fn fake_macos_sources_drive_reconnect_pause_rebuild_stop_and_wav_output() {
             == 2
             && log.binary.len() == 31
     });
+    {
+        let log = sidecar.lock().expect("sidecar log");
+        let first_retained = i16::from_le_bytes([log.binary[1][0], log.binary[1][1]]);
+        let newest_retained = i16::from_le_bytes([log.binary[30][0], log.binary[30][1]]);
+        assert_eq!(first_retained, 1966);
+        assert_eq!(newest_retained, 11_468);
+    }
     await_link_event(&runtime, &mut link_events, LinkEvent::Connected);
 
     let paused = capture.pause().expect("active capture pauses");
@@ -497,13 +574,7 @@ fn fake_macos_sources_drive_reconnect_pause_rebuild_stop_and_wav_output() {
     assert_eq!(sidecar.lock().expect("sidecar log").binary.len(), 31);
 
     capture.resume().expect("paused capture resumes");
-    {
-        let mut pipeline = pipeline.lock().expect("pipeline lock");
-        pipeline.sources.rebuild_microphone();
-        assert_eq!(pipeline.sources.system_rebuilds, 0);
-        assert_eq!(pipeline.sources.microphone_rebuilds, 1);
-        pipeline.push_tick(-0.5, 0.5);
-    }
+    pipeline.lock().expect("pipeline lock").push_tick(-0.5, 0.5);
     wait_until("post-rebuild frame", || {
         sidecar.lock().expect("sidecar log").binary.len() == 32
     });

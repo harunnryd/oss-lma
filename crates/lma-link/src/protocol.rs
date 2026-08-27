@@ -1,5 +1,7 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use crate::ErrorCode;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "EventType", rename_all = "SCREAMING_SNAKE_CASE")]
@@ -62,6 +64,37 @@ impl ControlMessage {
 
     pub fn to_json(&self) -> Value {
         serde_json::to_value(self).expect("control messages are serializable")
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "EventType")]
+enum IncomingMessage {
+    #[serde(rename = "ERROR")]
+    Error {
+        #[serde(rename = "CallId")]
+        call_id: String,
+        #[serde(rename = "Code")]
+        code: ErrorCode,
+        #[serde(rename = "Context", default = "empty_context")]
+        context: Value,
+    },
+    #[serde(other)]
+    Other,
+}
+
+fn empty_context() -> Value {
+    Value::Object(Default::default())
+}
+
+pub fn parse_error(raw: &str) -> Option<(String, ErrorCode, Value)> {
+    match serde_json::from_str(raw).ok()? {
+        IncomingMessage::Error {
+            call_id,
+            code,
+            context,
+        } => Some((call_id, code, context)),
+        IncomingMessage::Other => None,
     }
 }
 

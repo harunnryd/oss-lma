@@ -266,6 +266,11 @@ async fn run(
                     Some(Ok(Message::Ping(payload))) => {
                         if socket.send(Message::Pong(payload)).await.is_err() { break; }
                     }
+                    Some(Ok(Message::Text(text))) => {
+                        if let Some((call_id, code, context)) = crate::protocol::parse_error(&text) {
+                            let _ = events.send(crate::LinkEvent::Error { call_id, code, context });
+                        }
+                    }
                     Some(Ok(_)) => {}
                     Some(Err(_)) | None => break,
                 },

@@ -495,18 +495,104 @@ impl CaptureBackend for NativeCaptureBackend {
 }
 
 #[cfg(target_os = "macos")]
+pub struct NativePipeline {
+    system: Option<lma_capture::macos::SourceHandle>,
+    microphone: Option<lma_capture::macos::SourceHandle>,
+    source_events: Option<std::sync::mpsc::Receiver<lma_capture::macos::SourceEvent>>,
+    selection: CaptureDeviceSelection,
+}
+
+#[cfg(target_os = "macos")]
+impl NativePipeline {
+    fn new() -> Self {
+        Self {
+            system: None,
+            microphone: None,
+            source_events: None,
+            selection: CaptureDeviceSelection::default(),
+        }
+    }
+
+    pub fn with_sources(
+        selection: CaptureDeviceSelection,
+        system: lma_capture::macos::SourceHandle,
+        microphone: lma_capture::macos::SourceHandle,
+        source_events: std::sync::mpsc::Receiver<lma_capture::macos::SourceEvent>,
+    ) -> Self {
+        Self {
+            system: Some(system),
+            microphone: Some(microphone),
+            source_events: Some(source_events),
+            selection,
+        }
+    }
+
+    pub fn process_source_events(&mut self) -> Result<(), String> {
+        let events = self
+            .source_events
+            .as_ref()
+            .map(|events| events.try_iter().collect::<Vec<_>>())
+            .unwrap_or_default();
+        for event in events {
+            match event {
+                lma_capture::macos::SourceEvent::RebuildRequired(kind) => {
+                    let result = match kind {
+                        lma_capture::macos::SourceKind::System => {
+                            self.system.as_mut().map(|source| {
+                                source.rebuild(native_selection(&self.selection.system_output_id))
+                            })
+                        }
+                        lma_capture::macos::SourceKind::Microphone => {
+                            self.microphone.as_mut().map(|source| {
+                                source.rebuild(native_selection(&self.selection.microphone_id))
+                            })
+                        }
+                    };
+                    if let Some(result) = result {
+                        result?;
+                    }
+                }
+                lma_capture::macos::SourceEvent::Error(_, error) => return Err(error),
+                lma_capture::macos::SourceEvent::Started(_)
+                | lma_capture::macos::SourceEvent::Stopped(_)
+                | lma_capture::macos::SourceEvent::CleanupWarning(_, _) => {}
+            }
+        }
+        Ok(())
+    }
+
+    pub fn source_active(&self, kind: lma_capture::macos::SourceKind) -> bool {
+        match kind {
+            lma_capture::macos::SourceKind::System => self.system.as_ref(),
+            lma_capture::macos::SourceKind::Microphone => self.microphone.as_ref(),
+        }
+        .is_some_and(lma_capture::macos::SourceHandle::is_active)
+    }
+
+    fn stop_sources(&mut self) -> Result<(), String> {
+        let system = self.system.as_mut().map(|source| source.stop());
+        let microphone = self.microphone.as_mut().map(|source| source.stop());
+        self.system = None;
+        self.microphone = None;
+        self.source_events = None;
+        system
+            .into_iter()
+            .chain(microphone)
+            .find_map(Result::err)
+            .map_or(Ok(()), Err)
+    }
+}
+
+#[cfg(target_os = "macos")]
 struct NativeWorker {
     commands: std::sync::mpsc::Receiver<NativeCommand>,
     emit_levels: LevelEmitter,
     emit_failure: FailureEmitter,
     runtime: Option<tokio::runtime::Runtime>,
-    system: Option<lma_capture::macos::SourceHandle>,
-    microphone: Option<lma_capture::macos::SourceHandle>,
     system_frames: Option<std::sync::mpsc::Receiver<lma_capture::macos::MonoFrames>>,
     microphone_frames: Option<std::sync::mpsc::Receiver<lma_capture::macos::MonoFrames>>,
-    source_events: Option<std::sync::mpsc::Receiver<lma_capture::macos::SourceEvent>>,
     active_generation: Option<u64>,
-    selection: CaptureDeviceSelection,
+    pipeline: NativePipeline,
     mixer: lma_capture::Mixer,
     recorder: Option<lma_capture::WavRecorder>,
     link: Option<lma_link::LinkClient>,
@@ -525,13 +611,10 @@ impl NativeWorker {
             emit_levels,
             emit_failure,
             runtime: None,
-            system: None,
-            microphone: None,
             system_frames: None,
             microphone_frames: None,
-            source_events: None,
             active_generation: None,
-            selection: CaptureDeviceSelection::default(),
+            pipeline: NativePipeline::new(),
             mixer: lma_capture::Mixer::new(),
             recorder: None,
             link: None,
@@ -697,67 +780,24 @@ impl NativeWorker {
         if !readiness.both_active() {
             return Ok(readiness);
         }
-        self.selection = selection;
-        self.system = Some(system);
-        self.microphone = Some(microphone);
+        self.pipeline = NativePipeline::with_sources(selection, system, microphone, source_events);
         self.system_frames = Some(system_receiver);
         self.microphone_frames = Some(microphone_receiver);
-        self.source_events = Some(source_events);
         self.active_generation = Some(generation);
         Ok(readiness)
     }
 
     fn stop_sources(&mut self) -> Result<(), String> {
-        let system = self.system.as_mut().map(|source| source.stop());
-        let microphone = self.microphone.as_mut().map(|source| source.stop());
-        self.system = None;
-        self.microphone = None;
         self.system_frames = None;
         self.microphone_frames = None;
-        self.source_events = None;
         self.active_generation = None;
         self.mixer = lma_capture::Mixer::new();
-        system
-            .into_iter()
-            .chain(microphone)
-            .find_map(Result::err)
-            .map_or(Ok(()), Err)
+        self.pipeline.stop_sources()
     }
 
     fn process_source_events(&mut self) {
-        let events = self
-            .source_events
-            .as_ref()
-            .map(|events| events.try_iter().collect::<Vec<_>>())
-            .unwrap_or_default();
-        for event in events {
-            match event {
-                lma_capture::macos::SourceEvent::RebuildRequired(kind) => {
-                    let result = match kind {
-                        lma_capture::macos::SourceKind::System => {
-                            self.system.as_mut().map(|source| {
-                                source.rebuild(native_selection(&self.selection.system_output_id))
-                            })
-                        }
-                        lma_capture::macos::SourceKind::Microphone => {
-                            self.microphone.as_mut().map(|source| {
-                                source.rebuild(native_selection(&self.selection.microphone_id))
-                            })
-                        }
-                    };
-                    if let Some(Err(error)) = result {
-                        self.fail_session(error);
-                        break;
-                    }
-                }
-                lma_capture::macos::SourceEvent::Error(_, error) => {
-                    self.fail_session(error);
-                    break;
-                }
-                lma_capture::macos::SourceEvent::Started(_)
-                | lma_capture::macos::SourceEvent::Stopped(_)
-                | lma_capture::macos::SourceEvent::CleanupWarning(_, _) => {}
-            }
+        if let Err(error) = self.pipeline.process_source_events() {
+            self.fail_session(error);
         }
     }
 
@@ -1407,7 +1447,7 @@ mod tests {
         );
         worker.active_generation = Some(7);
         let (events, source_events) = std::sync::mpsc::channel();
-        worker.source_events = Some(source_events);
+        worker.pipeline.source_events = Some(source_events);
         events
             .send(lma_capture::macos::SourceEvent::Error(
                 lma_capture::macos::SourceKind::System,
@@ -1421,7 +1461,7 @@ mod tests {
             *failures.lock().unwrap(),
             [(7, "ScreenCaptureKit stopped".into())]
         );
-        assert!(worker.source_events.is_none());
+        assert!(worker.pipeline.source_events.is_none());
     }
 
     #[cfg(target_os = "macos")]
@@ -1480,7 +1520,7 @@ mod tests {
         let starts = Rc::new(Cell::new(0));
         let (events, source_events) = std::sync::mpsc::channel();
         let (frames, _frame_receiver) = std::sync::mpsc::channel();
-        worker.microphone = Some(
+        worker.pipeline.microphone = Some(
             lma_capture::macos::MacSource::with_provider(
                 lma_capture::macos::SourceKind::Microphone,
                 CleanupProvider {
@@ -1490,7 +1530,7 @@ mod tests {
             )
             .start(lma_capture::macos::DeviceSelection::Default, frames),
         );
-        worker.source_events = Some(source_events);
+        worker.pipeline.source_events = Some(source_events);
         events
             .send(lma_capture::macos::SourceEvent::RebuildRequired(
                 lma_capture::macos::SourceKind::Microphone,
@@ -1501,9 +1541,9 @@ mod tests {
         worker.process_source_events();
 
         assert_eq!(starts.get(), 2);
-        assert!(worker.microphone.as_ref().unwrap().is_active());
+        assert!(worker.pipeline.microphone.as_ref().unwrap().is_active());
         assert!(failures.lock().unwrap().is_empty());
-        assert!(worker.source_events.is_some());
+        assert!(worker.pipeline.source_events.is_some());
     }
 
     #[test]
