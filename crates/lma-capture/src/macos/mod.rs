@@ -176,20 +176,21 @@ impl SourceHandle {
     }
 
     pub fn stop(&mut self) -> Result<(), String> {
-        if let Some(mut stream) = self.stream.take() {
+        if let Some(stream) = self.stream.as_mut() {
             if let Err(error) = stream.stop() {
                 let _ = self
                     .events
                     .send(SourceEvent::Error(self.kind, error.clone()));
                 return Err(error);
             }
+            self.stream = None;
             let _ = self.events.send(SourceEvent::Stopped(self.kind));
         }
         Ok(())
     }
 
     pub fn rebuild(&mut self, selection: DeviceSelection) -> Result<(), String> {
-        let _ = self.stop();
+        self.stop()?;
         match self.provider.start(
             self.kind,
             &selection,
@@ -225,6 +226,7 @@ impl Drop for SourceHandle {
 mod tests {
     use std::{
         cell::RefCell,
+        collections::VecDeque,
         rc::Rc,
         sync::{mpsc, mpsc::Sender, Arc},
     };
@@ -237,19 +239,20 @@ mod tests {
     type StreamAction = (SourceKind, &'static str, DeviceSelection);
     type StreamActions = Rc<RefCell<Vec<StreamAction>>>;
     type NativeObservers = Rc<RefCell<Vec<(SourceKind, Arc<dyn NativeStreamEvents>)>>>;
+    type StopResults = Rc<RefCell<VecDeque<Result<(), String>>>>;
 
     #[derive(Clone)]
     struct FakeStreams {
         actions: StreamActions,
         observers: NativeObservers,
-        stop_error: Option<String>,
+        stop_results: StopResults,
     }
 
     struct FakeStream {
         kind: SourceKind,
         selection: DeviceSelection,
         actions: StreamActions,
-        stop_error: Option<String>,
+        stop_results: StopResults,
     }
 
     impl NativeStream for FakeStream {
@@ -257,10 +260,7 @@ mod tests {
             self.actions
                 .borrow_mut()
                 .push((self.kind, "stop", self.selection.clone()));
-            match &self.stop_error {
-                Some(error) => Err(error.clone()),
-                None => Ok(()),
-            }
+            self.stop_results.borrow_mut().pop_front().unwrap_or(Ok(()))
         }
     }
 
@@ -280,9 +280,13 @@ mod tests {
                 kind,
                 selection: selection.clone(),
                 actions: self.actions.clone(),
-                stop_error: self.stop_error.clone(),
+                stop_results: self.stop_results.clone(),
             }))
         }
+    }
+
+    fn stop_results(results: impl IntoIterator<Item = Result<(), String>>) -> StopResults {
+        Rc::new(RefCell::new(results.into_iter().collect()))
     }
 
     #[test]
@@ -291,7 +295,7 @@ mod tests {
         let provider = FakeStreams {
             actions: actions.clone(),
             observers: Rc::new(RefCell::new(Vec::new())),
-            stop_error: None,
+            stop_results: stop_results([]),
         };
         let (frames_tx, _frames_rx) = mpsc::channel();
         let (events_tx, _events_rx) = mpsc::channel();
@@ -331,7 +335,7 @@ mod tests {
         let provider = FakeStreams {
             actions: Rc::new(RefCell::new(Vec::new())),
             observers: Rc::new(RefCell::new(Vec::new())),
-            stop_error: None,
+            stop_results: stop_results([]),
         };
         let observers = provider.observers.clone();
         let (frames_tx, _frames_rx) = mpsc::channel();
@@ -364,7 +368,7 @@ mod tests {
         let provider = FakeStreams {
             actions: Rc::new(RefCell::new(Vec::new())),
             observers: Rc::new(RefCell::new(Vec::new())),
-            stop_error: Some("native stop failed".into()),
+            stop_results: stop_results([Err("native stop failed".into())]),
         };
         let (frames_tx, _frames_rx) = mpsc::channel();
         let (events_tx, events_rx) = mpsc::channel();
@@ -377,7 +381,7 @@ mod tests {
 
         assert_eq!(handle.stop().unwrap_err(), "native stop failed");
 
-        assert!(!handle.is_active());
+        assert!(handle.is_active());
         assert_eq!(
             events_rx.recv().unwrap(),
             SourceEvent::Error(SourceKind::System, "native stop failed".into())
@@ -386,12 +390,12 @@ mod tests {
     }
 
     #[test]
-    fn rebuild_starts_a_new_stream_after_native_stop_fails() {
+    fn rebuild_does_not_start_a_new_stream_after_native_stop_fails() {
         let actions = Rc::new(RefCell::new(Vec::new()));
         let provider = FakeStreams {
             actions: actions.clone(),
             observers: Rc::new(RefCell::new(Vec::new())),
-            stop_error: Some("native stop failed".into()),
+            stop_results: stop_results([Err("native stop failed".into())]),
         };
         let (frames_tx, _frames_rx) = mpsc::channel();
         let (events_tx, events_rx) = mpsc::channel();
@@ -403,8 +407,51 @@ mod tests {
         );
         actions.borrow_mut().clear();
 
+        assert_eq!(
+            handle
+                .rebuild(DeviceSelection::DeviceId("replacement-mic".into()))
+                .unwrap_err(),
+            "native stop failed"
+        );
+
+        assert!(handle.is_active());
+        assert_eq!(
+            *actions.borrow(),
+            [(SourceKind::Microphone, "stop", DeviceSelection::Default)]
+        );
+        assert_eq!(
+            events_rx.recv().unwrap(),
+            SourceEvent::Error(SourceKind::Microphone, "native stop failed".into())
+        );
+        assert!(events_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn rebuild_can_retry_teardown_before_starting_a_replacement() {
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let provider = FakeStreams {
+            actions: actions.clone(),
+            observers: Rc::new(RefCell::new(Vec::new())),
+            stop_results: stop_results([Err("native stop failed".into()), Ok(())]),
+        };
+        let (frames_tx, _frames_rx) = mpsc::channel();
+        let (events_tx, events_rx) = mpsc::channel();
+        let source = MacSource::with_provider(SourceKind::Microphone, provider, events_tx);
+        let mut handle = source.start(DeviceSelection::Default, frames_tx);
+        assert_eq!(
+            events_rx.recv().unwrap(),
+            SourceEvent::Started(SourceKind::Microphone)
+        );
+        actions.borrow_mut().clear();
+
+        assert_eq!(
+            handle
+                .rebuild(DeviceSelection::DeviceId("first-replacement".into()))
+                .unwrap_err(),
+            "native stop failed"
+        );
         handle
-            .rebuild(DeviceSelection::DeviceId("replacement-mic".into()))
+            .rebuild(DeviceSelection::DeviceId("second-replacement".into()))
             .unwrap();
 
         assert!(handle.is_active());
@@ -412,16 +459,21 @@ mod tests {
             *actions.borrow(),
             [
                 (SourceKind::Microphone, "stop", DeviceSelection::Default),
+                (SourceKind::Microphone, "stop", DeviceSelection::Default),
                 (
                     SourceKind::Microphone,
                     "start",
-                    DeviceSelection::DeviceId("replacement-mic".into())
+                    DeviceSelection::DeviceId("second-replacement".into())
                 )
             ]
         );
         assert_eq!(
             events_rx.recv().unwrap(),
             SourceEvent::Error(SourceKind::Microphone, "native stop failed".into())
+        );
+        assert_eq!(
+            events_rx.recv().unwrap(),
+            SourceEvent::Stopped(SourceKind::Microphone)
         );
         assert_eq!(
             events_rx.recv().unwrap(),
