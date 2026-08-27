@@ -93,6 +93,8 @@ async def run_server(
     bound_port = server.sockets[0].getsockname()[1]
     sink.write(f"SIDECAR_READY port={bound_port} token={token}\n")
     sink.flush()
+    if ready_sink is None:
+        sink.close()
     try:
         if stop is None:
             await asyncio.Event().wait()
