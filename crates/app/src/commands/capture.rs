@@ -258,7 +258,10 @@ impl AppCapture {
         if let Err(error) = link {
             let _ = self.backend.lock().unwrap().finish_recorder();
             let _ = self.backend.lock().unwrap().stop_sources();
-            return self.fail(error);
+            return match self.startup_error(generation) {
+                Some(startup_error) => Err(startup_error),
+                None => self.fail(error),
+            };
         }
 
         match self.update_state(|state| {
@@ -752,7 +755,8 @@ impl NativeWorker {
                     break;
                 }
                 lma_capture::macos::SourceEvent::Started(_)
-                | lma_capture::macos::SourceEvent::Stopped(_) => {}
+                | lma_capture::macos::SourceEvent::Stopped(_)
+                | lma_capture::macos::SourceEvent::CleanupWarning(_, _) => {}
             }
         }
     }
@@ -1021,8 +1025,9 @@ mod tests {
 
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum FailurePoint {
-        StartSources,
-        StartLink,
+        Sources,
+        LinkActivation,
+        LinkRejectedAfterFailure,
     }
 
     struct FakeBackend {
@@ -1051,7 +1056,7 @@ mod tests {
             generation: u64,
         ) -> Result<SourceReadiness, String> {
             self.actions.lock().unwrap().push("sources:start".into());
-            if self.failure_point == Some(FailurePoint::StartSources) {
+            if self.failure_point == Some(FailurePoint::Sources) {
                 self.state
                     .lock()
                     .unwrap()
@@ -1078,13 +1083,20 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(format!("link:start:{call_id}"));
-            if self.failure_point == Some(FailurePoint::StartLink) {
+            if matches!(
+                self.failure_point,
+                Some(FailurePoint::LinkActivation | FailurePoint::LinkRejectedAfterFailure)
+            ) {
                 self.state
                     .lock()
                     .unwrap()
                     .fail_if_current(generation, "source failed before activation");
             }
-            Ok(())
+            if self.failure_point == Some(FailurePoint::LinkRejectedAfterFailure) {
+                Err("capture start was superseded".into())
+            } else {
+                Ok(())
+            }
         }
 
         fn pause_link(&mut self) -> Result<(), String> {
@@ -1276,7 +1288,7 @@ mod tests {
                 microphone: true,
             },
             app_data.clone(),
-            Some(FailurePoint::StartSources),
+            Some(FailurePoint::Sources),
             None,
             None,
             Vec::new(),
@@ -1299,7 +1311,7 @@ mod tests {
                 microphone: true,
             },
             app_data.clone(),
-            Some(FailurePoint::StartLink),
+            Some(FailurePoint::LinkActivation),
             None,
             None,
             Vec::new(),
@@ -1312,6 +1324,36 @@ mod tests {
         assert_eq!(
             &actions[3..],
             ["link:end", "recorder:finish", "sources:stop"]
+        );
+        fs::remove_dir_all(app_data).unwrap();
+    }
+
+    #[test]
+    fn start_link_rejection_preserves_the_generation_failure() {
+        let app_data = temporary_app_data("start-link-after-failure");
+        let (service, actions) = service_with_behavior(
+            PermissionSnapshot::granted(),
+            SourceReadiness {
+                system: true,
+                microphone: true,
+            },
+            app_data.clone(),
+            Some(FailurePoint::LinkRejectedAfterFailure),
+            None,
+            None,
+            Vec::new(),
+        );
+
+        let error = service.start(LinkOptions::test_default()).unwrap_err();
+
+        assert_eq!(error, "source failed before activation");
+        assert_eq!(
+            service.status().error.as_deref(),
+            Some("source failed before activation")
+        );
+        assert_eq!(
+            &actions.lock().unwrap()[3..],
+            ["recorder:finish", "sources:stop"]
         );
         fs::remove_dir_all(app_data).unwrap();
     }
@@ -1380,6 +1422,88 @@ mod tests {
             [(7, "ScreenCaptureKit stopped".into())]
         );
         assert!(worker.source_events.is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn successful_rebuild_survives_a_stopped_cleanup_error() {
+        use std::{cell::Cell, rc::Rc};
+
+        struct CleanupStream {
+            cleanup_error: bool,
+        }
+
+        impl lma_capture::macos::NativeStream for CleanupStream {
+            fn stop(&mut self) -> Result<(), lma_capture::macos::NativeStopError> {
+                if self.cleanup_error {
+                    Err(lma_capture::macos::NativeStopError::Stopped(
+                        "old stream cleanup failed".into(),
+                    ))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+
+        #[derive(Clone)]
+        struct CleanupProvider {
+            starts: Rc<Cell<usize>>,
+        }
+
+        impl lma_capture::macos::NativeStreamProvider for CleanupProvider {
+            fn start(
+                &self,
+                _kind: lma_capture::macos::SourceKind,
+                _selection: &lma_capture::macos::DeviceSelection,
+                _frames: std::sync::mpsc::Sender<lma_capture::macos::MonoFrames>,
+                _events: Arc<dyn lma_capture::macos::NativeStreamEvents>,
+            ) -> Result<Box<dyn lma_capture::macos::NativeStream>, String> {
+                let start = self.starts.get();
+                self.starts.set(start + 1);
+                Ok(Box::new(CleanupStream {
+                    cleanup_error: start == 0,
+                }))
+            }
+        }
+
+        let (_commands, receiver) = std::sync::mpsc::channel();
+        let failures = Arc::new(Mutex::new(Vec::new()));
+        let emitted = failures.clone();
+        let mut worker = super::NativeWorker::new(
+            receiver,
+            Arc::new(|_| {}),
+            Arc::new(move |generation, error| {
+                emitted.lock().unwrap().push((generation, error));
+            }),
+        );
+        worker.active_generation = Some(9);
+        let starts = Rc::new(Cell::new(0));
+        let (events, source_events) = std::sync::mpsc::channel();
+        let (frames, _frame_receiver) = std::sync::mpsc::channel();
+        worker.microphone = Some(
+            lma_capture::macos::MacSource::with_provider(
+                lma_capture::macos::SourceKind::Microphone,
+                CleanupProvider {
+                    starts: starts.clone(),
+                },
+                events.clone(),
+            )
+            .start(lma_capture::macos::DeviceSelection::Default, frames),
+        );
+        worker.source_events = Some(source_events);
+        events
+            .send(lma_capture::macos::SourceEvent::RebuildRequired(
+                lma_capture::macos::SourceKind::Microphone,
+            ))
+            .unwrap();
+
+        worker.process_source_events();
+        worker.process_source_events();
+
+        assert_eq!(starts.get(), 2);
+        assert!(worker.microphone.as_ref().unwrap().is_active());
+        assert!(failures.lock().unwrap().is_empty());
+        assert!(worker.source_events.is_some());
     }
 
     #[test]

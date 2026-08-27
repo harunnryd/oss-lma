@@ -41,6 +41,7 @@ pub enum SourceEvent {
     Started(SourceKind),
     Stopped(SourceKind),
     RebuildRequired(SourceKind),
+    CleanupWarning(SourceKind, String),
     Error(SourceKind, String),
 }
 
@@ -195,7 +196,7 @@ impl SourceHandle {
                 self.stream = None;
                 let _ = self
                     .events
-                    .send(SourceEvent::Error(self.kind, error.clone()));
+                    .send(SourceEvent::CleanupWarning(self.kind, error.clone()));
                 Err(error)
             }
             Err(NativeStopError::Indeterminate(error)) => {
@@ -533,7 +534,7 @@ mod tests {
         assert!(!handle.is_active());
         assert_eq!(
             events_rx.recv().unwrap(),
-            SourceEvent::Error(SourceKind::Microphone, "tap removal failed".into())
+            SourceEvent::CleanupWarning(SourceKind::Microphone, "tap removal failed".into())
         );
         assert!(events_rx.try_recv().is_err());
     }
@@ -576,7 +577,7 @@ mod tests {
         );
         assert_eq!(
             events_rx.recv().unwrap(),
-            SourceEvent::Error(SourceKind::Microphone, "tap removal failed".into())
+            SourceEvent::CleanupWarning(SourceKind::Microphone, "tap removal failed".into())
         );
         assert_eq!(
             events_rx.recv().unwrap(),
