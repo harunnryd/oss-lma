@@ -105,9 +105,11 @@ read `SIDECAR_READY` — read the new line and retry.
 
 **No system audio captured (macOS)** — `CAPTURE_PERMISSION_DENIED`. Screen
 Recording permission missing or attributed to the wrong bundle. Grant
-permission to the bundled app and relaunch through LaunchServices. Rebuilds
-with ad-hoc signing invalidate prior grants; install the development
-certificate to keep them stable.
+**Screen & System Audio Recording** to the bundled app in System Settings →
+Privacy & Security, then quit and relaunch the app. A grant to Terminal or a
+nested executable does not authorize the bundle. Rebuilds with ad-hoc signing
+invalidate prior grants; install the development certificate to keep them
+stable.
 
 **Microphone blocked on either OS** — `CAPTURE_PERMISSION_DENIED`. On macOS
 the Microphone prompt was denied; on Windows, Settings → Privacy → Microphone
@@ -115,9 +117,17 @@ has desktop-app access off. Re-enable, then reselect the device in Settings →
 Capture ([Capture permissions](prerequisites-and-install.md#capture-permissions)).
 
 **No microphone input after unplugging headset** — `CAPTURE_DEVICE_LOST`.
-Capture rebuilds on device-change events; if a device stays silent, reselect
-it in Settings. Repeated rebuilds mean a driver is flapping — pick the device
-explicitly instead of leaving the OS default.
+Capture rebuilds the affected source on device-change events without ending
+the meeting. Reconnect the selected microphone and wait for its meter to
+resume. If it stays silent, stop the meeting and reselect it in Settings;
+selections cannot change mid-meeting. Repeated rebuilds mean a driver is
+flapping — pick a stable device explicitly instead of leaving the OS default.
+
+**The wrong system output is captured (macOS)** — system capture follows the
+current macOS default output only. A system-output override is intentionally
+rejected (`system audio capture supports the default output only`). Switch
+the default output in macOS before starting the meeting; only microphone
+selection can be overridden in Settings → Capture.
 
 **Transcript pauses, then resumes with a gap** — `LINK_DISCONNECTED`. The
 capture→sidecar WebSocket dropped. Recovery is automatic: up to 3 s of audio
@@ -125,6 +135,13 @@ is buffered and flushed on reconnect (anything older is dropped), a fresh
 `START` reuses the same `CallId`, and timestamps stay continuous. Isolated
 drops around sleep/resume are normal; frequent ones mean the sidecar keeps
 dying — find the crash in [Diagnostics](#where-the-sidecar-logs-go).
+
+For developer diagnostics, subscribe to `lma_link::LinkClient` events:
+`Disconnected` marks an interrupted transport, `Connected` marks recovery,
+and `BufferDropped` means the bounded reconnect buffer evicted oldest audio.
+`BufferDropped` is link-layer telemetry today; it is not persisted as a
+meeting field or displayed as a UI counter. Record the event time and the
+link/sidecar log when filing a capture-loss bug.
 
 ## Transcription
 

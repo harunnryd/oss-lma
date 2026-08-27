@@ -80,6 +80,15 @@ Every component is testable without the others; run from the repo root.
 | `cargo test -p app` | Tauri commands, parameterized writes on Rust-owned tables, reader half of WAL concurrency tests |
 | `cargo clippy --workspace --all-targets -- -D warnings` | lint gate |
 
+For the macOS desktop-capture slice, the focused hardware-free checks are:
+
+```bash
+cargo test -p lma-capture
+cargo test -p lma-link
+cargo test -p app
+cargo test -p lma-link --test wire_contract
+```
+
 **Python workspace** (`uv sync --all-packages` first — plain `uv sync`
 does not install the workspace members `lma-stt` and `lma-pipeline` as
 editable installs, so cross-package imports fail on a fresh clone):
@@ -94,6 +103,15 @@ editable installs, so cross-package imports fail on a fresh clone):
 | `uv run pytest python/lma_vp` | scheduler, BotManager, platform adapters against the fake meeting page |
 | `uv run pytest python/sidecar` | WS contract against a fake STT engine, lifecycle supervisor, writer half of WAL concurrency tests |
 
+Run the Python contract and repository hooks after syncing workspace packages:
+
+```bash
+uv sync --all-packages
+uv run pytest python/sidecar/tests/test_wire_contract.py
+uv run pytest python/sidecar/tests/test_error_catalog.py
+uv run pre-commit run --all-files
+```
+
 **Contract validation** — both sides fail independently when a frame shape
 drifts:
 
@@ -101,7 +119,7 @@ drifts:
 |---|---|
 | `cargo test -p lma-link --test wire_contract` | every Rust frame type serializes to a `contracts/events.schema.json`-valid payload; known-good JSON parses back |
 | `uv run pytest python/sidecar/tests/test_wire_contract.py` | same guarantee for the Python event builders |
-| `cargo test -p app --test error_catalog` | Rust error registry matches `contracts/errors.yaml`: codes, severities, recovery actions parsed and compared |
+| `cargo test -p lma-link --test wire_contract` | Rust error registry matches `contracts/errors.yaml`: codes, severities, recovery actions parsed and compared |
 | `uv run pytest python/sidecar/tests/test_error_catalog.py` | same file parsed on the Python side; unknown codes raise |
 
 **Fixture regeneration** — recordings are inputs of record, never edited by
@@ -201,6 +219,35 @@ reopen), exponential backoff 0.5–10 s, a single-flight connect guard, and a
 fresh `START` (same `CallId`) after every disconnect. The sidecar carries a
 cumulative time offset into the new session, keeping segment timestamps
 continuous; the link layer never adjusts times.
+
+`LinkClient::subscribe()` supplies capture-link telemetry. It emits
+`Connected`, `Disconnected`, and `BufferDropped`; the final event means the
+three-second buffer evicted oldest frames during a disconnect. The app should
+treat these as diagnostic transport events: the current shell does not persist
+a dropped-frame count or surface one in the webview.
+
+## macOS capture development
+
+Use a bundled app identity for a real permission check. Grant **Microphone**
+and **Screen & System Audio Recording** to that `.app` in System Settings →
+Privacy & Security, then relaunch it. Grants assigned to Terminal or to an
+inner binary do not transfer to the app. Ad-hoc-signed rebuilds may acquire a
+new TCC identity and need new grants; a persistent development certificate
+avoids that churn.
+
+The `capture_permissions` command reports both grants and `capture_devices`
+lists input/output devices. `set_capture_devices` accepts a microphone ID or
+no microphone ID for the OS default, but rejects any `systemOutputId`: macOS
+ScreenCaptureKit captures only the active default output. Device settings are
+immutable during an active meeting. A default-device change or selected-device
+disconnect triggers a rebuild of only the affected source, so a successful
+rebuild does not end the meeting.
+
+`capture-levels` emits separate `system` and `microphone` levels. Do not start
+a manual recording until both meters move: meeting startup also rejects a
+missing permission or either inactive source. On stop, the WAV recorder
+finishes at `<app-data>/recordings/<meeting_id>/audio.wav`; on macOS the base
+directory is `~/Library/Application Support/oss-lma/`.
 
 ## Data model
 

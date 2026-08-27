@@ -30,12 +30,31 @@ Both permissions attach to the bundled `.app` identity. Launching inner
 binaries directly from a terminal attributes the permission to the terminal
 and silently fails.
 
+For a source build, use `cargo tauri dev` to exercise capture. For a packaged
+build, grant **Microphone** and **Screen & System Audio Recording** to the
+bundled `oss-lma.app` in **System Settings → Privacy & Security**, then quit
+and relaunch that app. Do not grant the permissions only to Terminal, `cargo`,
+or the nested executable: that does not authorize the bundled app.
+
 **Windows** needs no permission for system-audio loopback — WASAPI provides
 it natively. The only gate is the microphone privacy setting.
 
 > During development, ad-hoc signing pins the macOS TCC identity per build;
 > rebuilds invalidate prior grants. Install a persistent self-signed
 > certificate to keep them stable across iterations.
+
+### Capture device selection (macOS)
+
+The system-audio source always follows the **current macOS default output**.
+Although the capture API reports output devices for diagnostics, choosing a
+specific system-output ID is rejected because ScreenCaptureKit cannot honor
+that override. Change the default output in macOS, then start a new meeting.
+
+The microphone may be left on the macOS default or set to a listed microphone
+ID in Settings → Capture. An explicit microphone remains selected across
+default-device changes. Device selections cannot change while a meeting is
+active. If the selected microphone disconnects, capture rebuilds that source
+when it returns; the meeting stays active unless the rebuild itself fails.
 
 ## Provider keys
 
@@ -82,7 +101,7 @@ explains how to gather state for each surface.
    has streaming entitlements.
 
 3. **Devices visible, meters moving** — Settings → Capture: select your
-   microphone, then play any audio on the machine.
+   microphone if needed, then play any audio on the machine.
    *Expected:* your mic appears in the device list and both VU meters move
    while audio plays.
    *If it fails:* empty list or flat meters means capture permissions were
@@ -93,10 +112,12 @@ explains how to gather state for each surface.
    (anything audible through the speakers works), say a sentence aloud, then
    press **Stop**.
    *Expected:* the meeting appears under **Meetings** with transcript text,
-   and the mixdown exists on disk:
+   and the mixdown is exactly
+   `<app-data>/recordings/<meeting_id>/audio.wav` (for example, on macOS):
 
    ```bash
-   ls -lh ~/Library/Application\ Support/oss-lma/recordings/   # macOS
+   find ~/Library/Application\ Support/oss-lma/recordings \\
+     -path '*/audio.wav' -type f -print
    ```
 
    ```powershell
