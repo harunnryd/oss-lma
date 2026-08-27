@@ -27,7 +27,7 @@ errors:
   - code: CAPTURE_DEVICE_LOST
     source: rust
     severity: retryable
-    recovery: rebuild_streams
+    recovery: rebuild_affected_source
     ui_message_key: err.capture_device_lost
   - code: CAPTURE_PERMISSION_DENIED
     source: rust

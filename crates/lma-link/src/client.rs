@@ -204,6 +204,7 @@ async fn run(
             retry_delay = (retry_delay * 2).min(Duration::from_secs(10));
             continue;
         }
+        let _ = events.send(crate::LinkEvent::Connected);
         retry_delay = Duration::from_millis(500);
 
         if flush(
@@ -213,6 +214,7 @@ async fn run(
         .await
         .is_err()
         {
+            let _ = events.send(crate::LinkEvent::Disconnected);
             wait_for_retry(
                 &mut commands,
                 retry_delay,
@@ -271,6 +273,7 @@ async fn run(
         }
 
         if session.is_some() {
+            let _ = events.send(crate::LinkEvent::Disconnected);
             wait_for_retry(
                 &mut commands,
                 retry_delay,

@@ -12,8 +12,8 @@ browser tab, it transcribes meetings joined from **native desktop apps**
 (Zoom, Teams, WebEx, Slack huddles, phone bridges, …). It adds **no bot**
 or extra attendee to the meeting.
 
-> **Status:** macOS and Windows today. Capture lives in Rust
-> (`crates/lma-capture`); Linux is best-effort later via PipeWire loopback.
+> **Status:** macOS 13+ in this phase. Capture lives in Rust
+> (`crates/lma-capture`); Windows and Linux capture are planned separately.
 
 ## How it works
 
@@ -26,14 +26,8 @@ or extra attendee to the meeting.
   same pipeline as every other source ([Transcription &
   Translation](transcription-and-translation.md)).
 - **macOS** captures system audio via **ScreenCaptureKit** (loopback) and
-  the mic via an AVAudioEngine input tap. **Windows** captures system audio
-  via **WASAPI loopback** and the mic via WASAPI capture. On both, the two
-  mono sources are interleaved into stereo 16-bit PCM at 48 kHz, cut into
-  100 ms chunks.
-
-> On **Windows**, system-audio capture needs **no special permission** —
-> there is no equivalent of the macOS Screen Recording prompt. The only OS
-> gate is the microphone privacy setting.
+  the mic via an AVAudioEngine input tap. The two mono sources are interleaved
+  into stereo 16-bit PCM at 48 kHz, cut into 100 ms chunks.
 
 The capture stack survives device changes: unplug a headset mid-meeting and
 the mic stream rebuilds itself against the new default device without
@@ -49,12 +43,12 @@ Both sources run as independent mono Float32 streams at the target rate
   A tick with less than a full 100 ms of *both* channels emits nothing; the
   remainder carries into the next tick (the link layer only ever receives
   exact chunks);
-- converts to interleaved stereo int16: `sample × 32767`, clamped to
-  `[-32768, +32767]` (matching browser capture semantics);
+- converts to interleaved stereo int16: `sample × 32768`, truncated toward
+  zero and saturated to `[-32768, +32767]`;
 - on **mute**, zero-fills a channel but keeps consuming its frames
   (alignment preserved);
-- on **pause**, sends the wire-level `PAUSE` frame — the sidecar consumes
-  and discards while the session stays open.
+- on **pause**, sends the wire-level `PAUSE` frame and discards captured audio
+  before recording or streaming while the session stays open.
 
 > The reconnect buffer is sized from the configured rate:
 > `rate × 2ch × 2B × 3`. At the default 48 kHz that is exactly 3 s.
