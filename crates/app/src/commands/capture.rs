@@ -83,9 +83,15 @@ pub trait CaptureBackend: Send {
     fn start_sources(
         &mut self,
         selection: &CaptureDeviceSelection,
+        generation: u64,
     ) -> Result<SourceReadiness, String>;
     fn open_recorder(&mut self, path: &Path) -> Result<(), String>;
-    fn start_link(&mut self, call_id: &str, options: &LinkOptions) -> Result<(), String>;
+    fn start_link(
+        &mut self,
+        call_id: &str,
+        options: &LinkOptions,
+        generation: u64,
+    ) -> Result<(), String>;
     fn pause_link(&mut self) -> Result<(), String>;
     fn resume_link(&mut self) -> Result<(), String>;
     fn end_link(&mut self) -> Result<(), String>;
@@ -125,13 +131,16 @@ impl AppCapture {
         });
         let failed_state = state.clone();
         let failed_emitter = emit_snapshot.clone();
-        let emit_failure: FailureEmitter = Arc::new(move |error| {
+        let emit_failure: FailureEmitter = Arc::new(move |generation, error| {
             let snapshot = {
                 let mut state = failed_state.lock().unwrap();
-                state.fail(error);
-                state.snapshot()
+                state
+                    .fail_if_current(generation, error)
+                    .then(|| state.snapshot())
             };
-            failed_emitter(&snapshot);
+            if let Some(snapshot) = snapshot {
+                failed_emitter(&snapshot);
+            }
         });
 
         let backend = NativeCaptureBackend::new(emit_levels, emit_failure)?;
@@ -191,7 +200,8 @@ impl AppCapture {
 
     pub fn start(&self, options: LinkOptions) -> Result<CaptureSnapshot, String> {
         let _operation = self.operation.lock().unwrap();
-        self.update_state(|state| state.begin_preflight())?;
+        self.update_state(|state| state.begin_preflight().map(|_| ()))?;
+        let generation = self.state.lock().unwrap().generation();
 
         let permissions = match self.backend.lock().unwrap().permissions() {
             Ok(permissions) => permissions,
@@ -203,13 +213,22 @@ impl AppCapture {
 
         self.update_state(|state| state.begin_starting())?;
         let selection = self.selection.lock().unwrap().clone();
-        let readiness = match self.backend.lock().unwrap().start_sources(&selection) {
+        let readiness = match self
+            .backend
+            .lock()
+            .unwrap()
+            .start_sources(&selection, generation)
+        {
             Ok(readiness) => readiness,
             Err(error) => return self.fail(error),
         };
         if !readiness.both_active() {
             let _ = self.backend.lock().unwrap().stop_sources();
             return self.fail("both capture sources must be active");
+        }
+        if let Some(error) = self.startup_error(generation) {
+            let _ = self.backend.lock().unwrap().stop_sources();
+            return Err(error);
         }
 
         let meeting_id = uuid::Uuid::new_v4().to_string();
@@ -220,22 +239,40 @@ impl AppCapture {
         }
         let recording_path = meeting_dir.join("audio.wav");
 
-        if let Err(error) = self.backend.lock().unwrap().open_recorder(&recording_path) {
+        let recorder = self.backend.lock().unwrap().open_recorder(&recording_path);
+        if let Err(error) = recorder {
             let _ = self.backend.lock().unwrap().stop_sources();
             return self.fail(error);
         }
-        if let Err(error) = self
+        if let Some(error) = self.startup_error(generation) {
+            let mut backend = self.backend.lock().unwrap();
+            let _ = backend.finish_recorder();
+            let _ = backend.stop_sources();
+            return Err(error);
+        }
+        let link = self
             .backend
             .lock()
             .unwrap()
-            .start_link(&meeting_id, &options)
-        {
+            .start_link(&meeting_id, &options, generation);
+        if let Err(error) = link {
             let _ = self.backend.lock().unwrap().finish_recorder();
             let _ = self.backend.lock().unwrap().stop_sources();
             return self.fail(error);
         }
 
-        self.update_state(|state| state.activate(readiness, meeting_id, recording_path))
+        match self.update_state(|state| {
+            state.activate_if_current(generation, readiness, meeting_id, recording_path)
+        }) {
+            Ok(snapshot) => Ok(snapshot),
+            Err(error) => {
+                let mut backend = self.backend.lock().unwrap();
+                let _ = backend.end_link();
+                let _ = backend.finish_recorder();
+                let _ = backend.stop_sources();
+                Err(self.startup_error(generation).unwrap_or(error))
+            }
+        }
     }
 
     pub fn pause(&self) -> Result<CaptureSnapshot, String> {
@@ -243,7 +280,9 @@ impl AppCapture {
         if self.status().phase != crate::capture_state::CapturePhase::Active {
             return Err("capture can only pause an active meeting".to_owned());
         }
-        if let Err(error) = self.backend.lock().unwrap().pause_link() {
+        let result = self.backend.lock().unwrap().pause_link();
+        if let Err(error) = result {
+            self.close_backend();
             return self.fail(error);
         }
         self.update_state(|state| state.pause())
@@ -254,7 +293,9 @@ impl AppCapture {
         if self.status().phase != crate::capture_state::CapturePhase::Paused {
             return Err("capture can only resume a paused meeting".to_owned());
         }
-        if let Err(error) = self.backend.lock().unwrap().resume_link() {
+        let result = self.backend.lock().unwrap().resume_link();
+        if let Err(error) = result {
+            self.close_backend();
             return self.fail(error);
         }
         self.update_state(|state| state.resume())
@@ -307,10 +348,29 @@ impl AppCapture {
         (self.emit_snapshot)(&snapshot);
         Ok(snapshot)
     }
+
+    fn startup_error(&self, generation: u64) -> Option<String> {
+        let state = self.state.lock().unwrap();
+        let snapshot = state.snapshot();
+        (state.generation() != generation
+            || snapshot.phase != crate::capture_state::CapturePhase::Starting)
+            .then(|| {
+                snapshot
+                    .error
+                    .unwrap_or_else(|| "capture start was interrupted".to_owned())
+            })
+    }
+
+    fn close_backend(&self) {
+        let mut backend = self.backend.lock().unwrap();
+        let _ = backend.end_link();
+        let _ = backend.finish_recorder();
+        let _ = backend.stop_sources();
+    }
 }
 
 type LevelEmitter = Arc<dyn Fn(LevelMeters) + Send + Sync>;
-type FailureEmitter = Arc<dyn Fn(String) + Send + Sync>;
+type FailureEmitter = Arc<dyn Fn(u64, String) + Send + Sync>;
 
 #[cfg(target_os = "macos")]
 struct NativeCaptureBackend {
@@ -323,12 +383,14 @@ enum NativeCommand {
     Devices(std::sync::mpsc::SyncSender<Result<Vec<CaptureDevice>, String>>),
     StartSources(
         CaptureDeviceSelection,
+        u64,
         std::sync::mpsc::SyncSender<Result<SourceReadiness, String>>,
     ),
     OpenRecorder(PathBuf, std::sync::mpsc::SyncSender<Result<(), String>>),
     StartLink(
         String,
         LinkOptions,
+        u64,
         std::sync::mpsc::SyncSender<Result<(), String>>,
     ),
     Pause(std::sync::mpsc::SyncSender<Result<(), String>>),
@@ -388,16 +450,24 @@ impl CaptureBackend for NativeCaptureBackend {
     fn start_sources(
         &mut self,
         selection: &CaptureDeviceSelection,
+        generation: u64,
     ) -> Result<SourceReadiness, String> {
-        self.request(|reply| NativeCommand::StartSources(selection.clone(), reply))
+        self.request(|reply| NativeCommand::StartSources(selection.clone(), generation, reply))
     }
 
     fn open_recorder(&mut self, path: &Path) -> Result<(), String> {
         self.request(|reply| NativeCommand::OpenRecorder(path.to_owned(), reply))
     }
 
-    fn start_link(&mut self, call_id: &str, options: &LinkOptions) -> Result<(), String> {
-        self.request(|reply| NativeCommand::StartLink(call_id.to_owned(), options.clone(), reply))
+    fn start_link(
+        &mut self,
+        call_id: &str,
+        options: &LinkOptions,
+        generation: u64,
+    ) -> Result<(), String> {
+        self.request(|reply| {
+            NativeCommand::StartLink(call_id.to_owned(), options.clone(), generation, reply)
+        })
     }
 
     fn pause_link(&mut self) -> Result<(), String> {
@@ -432,6 +502,7 @@ struct NativeWorker {
     system_frames: Option<std::sync::mpsc::Receiver<lma_capture::macos::MonoFrames>>,
     microphone_frames: Option<std::sync::mpsc::Receiver<lma_capture::macos::MonoFrames>>,
     source_events: Option<std::sync::mpsc::Receiver<lma_capture::macos::SourceEvent>>,
+    active_generation: Option<u64>,
     selection: CaptureDeviceSelection,
     mixer: lma_capture::Mixer,
     recorder: Option<lma_capture::WavRecorder>,
@@ -456,6 +527,7 @@ impl NativeWorker {
             system_frames: None,
             microphone_frames: None,
             source_events: None,
+            active_generation: None,
             selection: CaptureDeviceSelection::default(),
             mixer: lma_capture::Mixer::new(),
             recorder: None,
@@ -520,8 +592,8 @@ impl NativeWorker {
                     .collect();
                 let _ = reply.send(Ok(devices));
             }
-            NativeCommand::StartSources(selection, reply) => {
-                let _ = reply.send(self.start_sources(selection));
+            NativeCommand::StartSources(selection, generation, reply) => {
+                let _ = reply.send(self.start_sources(selection, generation));
             }
             NativeCommand::OpenRecorder(path, reply) => {
                 let result = lma_capture::WavRecorder::create(path, 48_000)
@@ -529,7 +601,11 @@ impl NativeWorker {
                     .map_err(|error| error.to_string());
                 let _ = reply.send(result);
             }
-            NativeCommand::StartLink(call_id, options, reply) => {
+            NativeCommand::StartLink(call_id, options, generation, reply) => {
+                if self.active_generation != Some(generation) {
+                    let _ = reply.send(Err("capture start was superseded".to_owned()));
+                    return;
+                }
                 let runtime = self.runtime.as_ref().expect("runtime is initialized");
                 let link = runtime.block_on(async {
                     let link = lma_link::LinkClient::new();
@@ -599,6 +675,7 @@ impl NativeWorker {
     fn start_sources(
         &mut self,
         selection: CaptureDeviceSelection,
+        generation: u64,
     ) -> Result<SourceReadiness, String> {
         self.stop_sources()?;
         let (events, source_events) = std::sync::mpsc::channel();
@@ -623,6 +700,7 @@ impl NativeWorker {
         self.system_frames = Some(system_receiver);
         self.microphone_frames = Some(microphone_receiver);
         self.source_events = Some(source_events);
+        self.active_generation = Some(generation);
         Ok(readiness)
     }
 
@@ -634,6 +712,7 @@ impl NativeWorker {
         self.system_frames = None;
         self.microphone_frames = None;
         self.source_events = None;
+        self.active_generation = None;
         self.mixer = lma_capture::Mixer::new();
         system
             .into_iter()
@@ -649,21 +728,31 @@ impl NativeWorker {
             .map(|events| events.try_iter().collect::<Vec<_>>())
             .unwrap_or_default();
         for event in events {
-            if let lma_capture::macos::SourceEvent::RebuildRequired(kind) = event {
-                let result = match kind {
-                    lma_capture::macos::SourceKind::System => self.system.as_mut().map(|source| {
-                        source.rebuild(native_selection(&self.selection.system_output_id))
-                    }),
-                    lma_capture::macos::SourceKind::Microphone => {
-                        self.microphone.as_mut().map(|source| {
-                            source.rebuild(native_selection(&self.selection.microphone_id))
-                        })
+            match event {
+                lma_capture::macos::SourceEvent::RebuildRequired(kind) => {
+                    let result = match kind {
+                        lma_capture::macos::SourceKind::System => {
+                            self.system.as_mut().map(|source| {
+                                source.rebuild(native_selection(&self.selection.system_output_id))
+                            })
+                        }
+                        lma_capture::macos::SourceKind::Microphone => {
+                            self.microphone.as_mut().map(|source| {
+                                source.rebuild(native_selection(&self.selection.microphone_id))
+                            })
+                        }
+                    };
+                    if let Some(Err(error)) = result {
+                        self.fail_session(error);
+                        break;
                     }
-                };
-                if let Some(Err(error)) = result {
+                }
+                lma_capture::macos::SourceEvent::Error(_, error) => {
                     self.fail_session(error);
                     break;
                 }
+                lma_capture::macos::SourceEvent::Started(_)
+                | lma_capture::macos::SourceEvent::Stopped(_) => {}
             }
         }
     }
@@ -719,8 +808,11 @@ impl NativeWorker {
     }
 
     fn fail_session(&mut self, error: String) {
+        let generation = self.active_generation;
         self.close_session();
-        (self.emit_failure)(error);
+        if let Some(generation) = generation {
+            (self.emit_failure)(generation, error);
+        }
     }
 
     fn close_session(&mut self) {
@@ -787,6 +879,7 @@ impl CaptureBackend for NativeCaptureBackend {
     fn start_sources(
         &mut self,
         _selection: &CaptureDeviceSelection,
+        _generation: u64,
     ) -> Result<SourceReadiness, String> {
         Err("native capture is supported on macOS only".to_owned())
     }
@@ -795,7 +888,12 @@ impl CaptureBackend for NativeCaptureBackend {
         Err("native capture is supported on macOS only".to_owned())
     }
 
-    fn start_link(&mut self, _call_id: &str, _options: &LinkOptions) -> Result<(), String> {
+    fn start_link(
+        &mut self,
+        _call_id: &str,
+        _options: &LinkOptions,
+        _generation: u64,
+    ) -> Result<(), String> {
         Err("native capture is supported on macOS only".to_owned())
     }
 
@@ -824,6 +922,9 @@ fn validate_selection(
     devices: &[CaptureDevice],
     selection: &CaptureDeviceSelection,
 ) -> Result<(), String> {
+    if selection.system_output_id.is_some() {
+        return Err("system audio capture supports the default output only".to_owned());
+    }
     for (id, kind) in [
         (
             selection.system_output_id.as_deref(),
@@ -902,7 +1003,7 @@ mod tests {
         sync::{Arc, Mutex},
     };
 
-    use crate::capture_state::{CapturePhase, SourceReadiness};
+    use crate::capture_state::{CapturePhase, CaptureState, SourceReadiness};
 
     use super::{
         AppCapture, CaptureBackend, CaptureDeviceSelection, LinkOptions, PermissionSnapshot,
@@ -918,11 +1019,21 @@ mod tests {
         }
     }
 
-    #[derive(Clone)]
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum FailurePoint {
+        StartSources,
+        StartLink,
+    }
+
     struct FakeBackend {
         permissions: PermissionSnapshot,
         readiness: SourceReadiness,
         actions: Arc<Mutex<Vec<String>>>,
+        state: Arc<Mutex<CaptureState>>,
+        failure_point: Option<FailurePoint>,
+        pause_error: Option<String>,
+        resume_error: Option<String>,
+        devices: Vec<super::CaptureDevice>,
     }
 
     impl CaptureBackend for FakeBackend {
@@ -931,14 +1042,21 @@ mod tests {
         }
 
         fn devices(&mut self) -> Result<Vec<super::CaptureDevice>, String> {
-            Ok(Vec::new())
+            Ok(self.devices.clone())
         }
 
         fn start_sources(
             &mut self,
             _selection: &CaptureDeviceSelection,
+            generation: u64,
         ) -> Result<SourceReadiness, String> {
             self.actions.lock().unwrap().push("sources:start".into());
+            if self.failure_point == Some(FailurePoint::StartSources) {
+                self.state
+                    .lock()
+                    .unwrap()
+                    .fail_if_current(generation, "source failed during startup");
+            }
             Ok(self.readiness)
         }
 
@@ -950,22 +1068,33 @@ mod tests {
             Ok(())
         }
 
-        fn start_link(&mut self, call_id: &str, _options: &LinkOptions) -> Result<(), String> {
+        fn start_link(
+            &mut self,
+            call_id: &str,
+            _options: &LinkOptions,
+            generation: u64,
+        ) -> Result<(), String> {
             self.actions
                 .lock()
                 .unwrap()
                 .push(format!("link:start:{call_id}"));
+            if self.failure_point == Some(FailurePoint::StartLink) {
+                self.state
+                    .lock()
+                    .unwrap()
+                    .fail_if_current(generation, "source failed before activation");
+            }
             Ok(())
         }
 
         fn pause_link(&mut self) -> Result<(), String> {
             self.actions.lock().unwrap().push("link:pause".into());
-            Ok(())
+            self.pause_error.clone().map_or(Ok(()), Err)
         }
 
         fn resume_link(&mut self) -> Result<(), String> {
             self.actions.lock().unwrap().push("link:resume".into());
-            Ok(())
+            self.resume_error.clone().map_or(Ok(()), Err)
         }
 
         fn end_link(&mut self) -> Result<(), String> {
@@ -993,13 +1122,49 @@ mod tests {
         readiness: SourceReadiness,
         app_data: PathBuf,
     ) -> (AppCapture, Arc<Mutex<Vec<String>>>) {
+        service_with_behavior(
+            permissions,
+            readiness,
+            app_data,
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
+    }
+
+    fn service_with_behavior(
+        permissions: PermissionSnapshot,
+        readiness: SourceReadiness,
+        app_data: PathBuf,
+        failure_point: Option<FailurePoint>,
+        pause_error: Option<String>,
+        resume_error: Option<String>,
+        devices: Vec<super::CaptureDevice>,
+    ) -> (AppCapture, Arc<Mutex<Vec<String>>>) {
         let actions = Arc::new(Mutex::new(Vec::new()));
+        let state = Arc::new(Mutex::new(CaptureState::default()));
         let backend = FakeBackend {
             permissions,
             readiness,
             actions: actions.clone(),
+            state: state.clone(),
+            failure_point,
+            pause_error,
+            resume_error,
+            devices,
         };
-        (AppCapture::with_backend(app_data, backend), actions)
+        (
+            AppCapture {
+                app_data_dir: app_data,
+                backend: Mutex::new(Box::new(backend)),
+                operation: Mutex::new(()),
+                selection: Mutex::new(CaptureDeviceSelection::default()),
+                state,
+                emit_snapshot: Arc::new(|_| {}),
+            },
+            actions,
+        )
     }
 
     #[test]
@@ -1102,6 +1267,122 @@ mod tests {
     }
 
     #[test]
+    fn source_failure_during_startup_stops_before_creating_meeting_resources() {
+        let app_data = temporary_app_data("startup-source-failure");
+        let (service, actions) = service_with_behavior(
+            PermissionSnapshot::granted(),
+            SourceReadiness {
+                system: true,
+                microphone: true,
+            },
+            app_data.clone(),
+            Some(FailurePoint::StartSources),
+            None,
+            None,
+            Vec::new(),
+        );
+
+        let error = service.start(LinkOptions::test_default()).unwrap_err();
+
+        assert_eq!(error, "source failed during startup");
+        assert_eq!(*actions.lock().unwrap(), ["sources:start", "sources:stop"]);
+        assert!(!app_data.join("recordings").exists());
+    }
+
+    #[test]
+    fn activation_race_closes_link_recorder_and_sources() {
+        let app_data = temporary_app_data("activation-race");
+        let (service, actions) = service_with_behavior(
+            PermissionSnapshot::granted(),
+            SourceReadiness {
+                system: true,
+                microphone: true,
+            },
+            app_data.clone(),
+            Some(FailurePoint::StartLink),
+            None,
+            None,
+            Vec::new(),
+        );
+
+        let error = service.start(LinkOptions::test_default()).unwrap_err();
+
+        assert_eq!(error, "source failed before activation");
+        let actions = actions.lock().unwrap();
+        assert_eq!(
+            &actions[3..],
+            ["link:end", "recorder:finish", "sources:stop"]
+        );
+        fs::remove_dir_all(app_data).unwrap();
+    }
+
+    #[test]
+    fn rejects_system_output_overrides_that_screen_capture_cannot_honor() {
+        let app_data = temporary_app_data("system-override");
+        let (service, _) = service_with_behavior(
+            PermissionSnapshot::granted(),
+            SourceReadiness {
+                system: true,
+                microphone: true,
+            },
+            app_data,
+            None,
+            None,
+            None,
+            vec![super::CaptureDevice {
+                id: "external-output".into(),
+                name: "External Output".into(),
+                is_default: false,
+                kind: super::CaptureDeviceKind::SystemOutput,
+            }],
+        );
+
+        let error = service
+            .set_devices(CaptureDeviceSelection {
+                system_output_id: Some("external-output".into()),
+                microphone_id: None,
+            })
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            "system audio capture supports the default output only"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn active_native_source_error_closes_the_session_and_reports_failure() {
+        let (_commands, receiver) = std::sync::mpsc::channel();
+        let failures = Arc::new(Mutex::new(Vec::new()));
+        let emitted = failures.clone();
+        let mut worker = super::NativeWorker::new(
+            receiver,
+            Arc::new(|_| {}),
+            Arc::new(move |generation, error| {
+                emitted.lock().unwrap().push((generation, error));
+            }),
+        );
+        worker.active_generation = Some(7);
+        let (events, source_events) = std::sync::mpsc::channel();
+        worker.source_events = Some(source_events);
+        events
+            .send(lma_capture::macos::SourceEvent::Error(
+                lma_capture::macos::SourceKind::System,
+                "ScreenCaptureKit stopped".into(),
+            ))
+            .unwrap();
+
+        worker.process_source_events();
+
+        assert_eq!(
+            *failures.lock().unwrap(),
+            [(7, "ScreenCaptureKit stopped".into())]
+        );
+        assert!(worker.source_events.is_none());
+    }
+
+    #[test]
     fn pause_forwards_pause_before_exposing_paused_state() {
         let app_data = temporary_app_data("pause");
         let (service, actions) = service(
@@ -1118,6 +1399,71 @@ mod tests {
 
         assert_eq!(snapshot.phase, CapturePhase::Paused);
         assert_eq!(actions.lock().unwrap().last().unwrap(), "link:pause");
+        fs::remove_dir_all(app_data).unwrap();
+    }
+
+    #[test]
+    fn pause_failure_closes_the_active_session_and_emits_inactive_sources() {
+        let app_data = temporary_app_data("pause-failure");
+        let (mut service, actions) = service_with_behavior(
+            PermissionSnapshot::granted(),
+            SourceReadiness {
+                system: true,
+                microphone: true,
+            },
+            app_data.clone(),
+            None,
+            Some("pause transport failed".into()),
+            None,
+            Vec::new(),
+        );
+        let snapshots = Arc::new(Mutex::new(Vec::new()));
+        let emitted = snapshots.clone();
+        service.emit_snapshot = Arc::new(move |snapshot| {
+            emitted.lock().unwrap().push(snapshot.clone());
+        });
+        service.start(LinkOptions::test_default()).unwrap();
+
+        let error = service.pause().unwrap_err();
+
+        assert_eq!(error, "pause transport failed");
+        assert_eq!(service.status().phase, CapturePhase::Failed);
+        assert_eq!(
+            &actions.lock().unwrap()[3..],
+            ["link:pause", "link:end", "recorder:finish", "sources:stop"]
+        );
+        let failed = snapshots.lock().unwrap().last().unwrap().clone();
+        assert!(!failed.system_active);
+        assert!(!failed.microphone_active);
+        fs::remove_dir_all(app_data).unwrap();
+    }
+
+    #[test]
+    fn resume_failure_closes_the_active_session() {
+        let app_data = temporary_app_data("resume-failure");
+        let (service, actions) = service_with_behavior(
+            PermissionSnapshot::granted(),
+            SourceReadiness {
+                system: true,
+                microphone: true,
+            },
+            app_data.clone(),
+            None,
+            None,
+            Some("resume transport failed".into()),
+            Vec::new(),
+        );
+        service.start(LinkOptions::test_default()).unwrap();
+        service.pause().unwrap();
+
+        let error = service.resume().unwrap_err();
+
+        assert_eq!(error, "resume transport failed");
+        assert_eq!(service.status().phase, CapturePhase::Failed);
+        assert_eq!(
+            &actions.lock().unwrap()[4..],
+            ["link:resume", "link:end", "recorder:finish", "sources:stop"]
+        );
         fs::remove_dir_all(app_data).unwrap();
     }
 

@@ -41,6 +41,7 @@ pub struct CaptureSnapshot {
 #[derive(Default)]
 pub struct CaptureState {
     snapshot: CaptureSnapshot,
+    generation: u64,
 }
 
 impl Default for CaptureSnapshot {
@@ -61,13 +62,14 @@ impl CaptureState {
         self.snapshot.clone()
     }
 
-    pub fn begin_preflight(&mut self) -> Result<(), String> {
+    pub fn begin_preflight(&mut self) -> Result<u64, String> {
         self.require_phase(&[CapturePhase::Idle, CapturePhase::Failed])?;
+        self.generation = self.generation.wrapping_add(1);
         self.snapshot = CaptureSnapshot {
             phase: CapturePhase::Preflight,
             ..CaptureSnapshot::default()
         };
-        Ok(())
+        Ok(self.generation)
     }
 
     pub fn begin_starting(&mut self) -> Result<(), String> {
@@ -92,6 +94,19 @@ impl CaptureState {
         Ok(())
     }
 
+    pub fn activate_if_current(
+        &mut self,
+        generation: u64,
+        readiness: SourceReadiness,
+        meeting_id: String,
+        recording_path: PathBuf,
+    ) -> Result<(), String> {
+        if generation != self.generation {
+            return Err("capture start was superseded".to_owned());
+        }
+        self.activate(readiness, meeting_id, recording_path)
+    }
+
     pub fn pause(&mut self) -> Result<(), String> {
         self.transition(CapturePhase::Active, CapturePhase::Paused)
     }
@@ -106,6 +121,7 @@ impl CaptureState {
             CapturePhase::Paused,
             CapturePhase::Failed,
         ])?;
+        self.generation = self.generation.wrapping_add(1);
         self.snapshot.phase = CapturePhase::Stopping;
         Ok(())
     }
@@ -118,7 +134,26 @@ impl CaptureState {
 
     pub fn fail(&mut self, error: impl Into<String>) {
         self.snapshot.phase = CapturePhase::Failed;
+        self.snapshot.system_active = false;
+        self.snapshot.microphone_active = false;
         self.snapshot.error = Some(error.into());
+    }
+
+    pub fn fail_if_current(&mut self, generation: u64, error: impl Into<String>) -> bool {
+        if generation != self.generation
+            || matches!(
+                self.snapshot.phase,
+                CapturePhase::Idle | CapturePhase::Stopping | CapturePhase::Failed
+            )
+        {
+            return false;
+        }
+        self.fail(error);
+        true
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     fn transition(&mut self, expected: CapturePhase, next: CapturePhase) -> Result<(), String> {
@@ -211,5 +246,42 @@ mod tests {
         state.begin_preflight().unwrap();
         assert_eq!(state.snapshot().phase, CapturePhase::Preflight);
         assert!(state.snapshot().error.is_none());
+    }
+
+    #[test]
+    fn stale_generation_cannot_fail_a_new_start_attempt() {
+        let mut state = CaptureState::default();
+        let stale_generation = state.begin_preflight().unwrap();
+        state.fail("first attempt failed");
+        let current_generation = state.begin_preflight().unwrap();
+
+        assert_ne!(stale_generation, current_generation);
+        assert!(!state.fail_if_current(stale_generation, "late native error"));
+        assert_eq!(state.snapshot().phase, CapturePhase::Preflight);
+        assert!(state.snapshot().error.is_none());
+        assert!(state.fail_if_current(current_generation, "current native error"));
+        assert_eq!(state.snapshot().phase, CapturePhase::Failed);
+    }
+
+    #[test]
+    fn failure_clears_active_source_readiness() {
+        let mut state = CaptureState::default();
+        state.begin_preflight().unwrap();
+        state.begin_starting().unwrap();
+        state
+            .activate(
+                SourceReadiness {
+                    system: true,
+                    microphone: true,
+                },
+                "meeting-1".into(),
+                PathBuf::from("/recordings/meeting-1/audio.wav"),
+            )
+            .unwrap();
+
+        state.fail("link failed");
+
+        assert!(!state.snapshot().system_active);
+        assert!(!state.snapshot().microphone_active);
     }
 }
