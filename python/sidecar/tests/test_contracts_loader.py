@@ -7,7 +7,7 @@ from contracts import ContractsError, load_error_codes, load_schema
 def test_load_schema_returns_parsed_events_schema():
     schema = load_schema()
     assert schema["title"] == "oss-lma sidecar wire protocol"
-    assert len(schema["oneOf"]) == 15
+    assert len(schema["oneOf"]) == 16
 
 
 def test_load_error_codes_keys_every_code_in_errors_yaml():
