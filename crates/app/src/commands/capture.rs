@@ -1392,6 +1392,60 @@ mod tests {
         assert_eq!(service.status().phase, CapturePhase::Failed);
     }
 
+    #[test]
+    fn webview_start_uses_the_supervised_endpoint_instead_of_payload_values() {
+        let app_data = temporary_app_data("supervised-webview-options");
+        let (service, starts) = supervised_service(&app_data);
+        let options = serde_json::from_value(serde_json::json!({
+            "diarizeMicrophone": true,
+            "port": 1,
+            "token": "webview-controlled",
+        }))
+        .expect("public capture options deserialize");
+
+        let snapshot = service
+            .start_from_webview(options)
+            .expect("supervised capture starts");
+
+        let starts = starts.lock().unwrap();
+        assert_eq!(starts.len(), 1);
+        assert_eq!(starts[0].0, snapshot.meeting_id.as_deref().unwrap());
+        assert_eq!(starts[0].1.port, 43123);
+        assert_eq!(starts[0].1.token, "a1b2c3");
+        assert!(starts[0].1.diarize_microphone);
+        fs::remove_dir_all(app_data).unwrap();
+    }
+
+    #[test]
+    fn supervised_start_creates_one_recording_and_reconnects_after_endpoint_replacement() {
+        let app_data = temporary_app_data("supervised-endpoint-replacement");
+        let (service, starts) = supervised_service(&app_data);
+
+        let snapshot = service
+            .start_from_webview(super::StartMeetingOptions {
+                diarize_microphone: false,
+            })
+            .expect("supervised capture starts");
+        let call_id = snapshot.meeting_id.clone().expect("call ID is created");
+        assert!(snapshot.recording_path.as_ref().unwrap().is_file());
+
+        let sidecar = service.sidecar.as_ref().unwrap();
+        sidecar
+            .respawn(supervisor_config())
+            .expect("supervisor replaces endpoint");
+        wait_until("replacement START", || starts.lock().unwrap().len() == 2);
+
+        let starts = starts.lock().unwrap();
+        assert_eq!(starts[0].0, call_id);
+        assert_eq!(starts[1].0, call_id);
+        assert_eq!(starts[0].1.port, 43123);
+        assert_eq!(starts[1].1.port, 43124);
+        assert_eq!(starts[1].1.token, "d4e5f6");
+        drop(starts);
+        service.stop().expect("reconnected meeting stops");
+        fs::remove_dir_all(app_data).unwrap();
+    }
+
     impl LinkOptions {
         fn test_default() -> Self {
             Self {
@@ -1569,6 +1623,129 @@ mod tests {
             },
             actions,
         )
+    }
+
+    type SupervisedStarts = Arc<Mutex<Vec<(String, LinkOptions)>>>;
+
+    struct SupervisedBackend {
+        starts: SupervisedStarts,
+    }
+
+    impl CaptureBackend for SupervisedBackend {
+        fn permissions(&mut self) -> Result<PermissionSnapshot, String> {
+            Ok(PermissionSnapshot::granted())
+        }
+
+        fn open_permission_settings(&mut self, _kind: CapturePermissionKind) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn devices(&mut self) -> Result<Vec<super::CaptureDevice>, String> {
+            Ok(Vec::new())
+        }
+
+        fn start_sources(
+            &mut self,
+            _selection: &CaptureDeviceSelection,
+            _generation: u64,
+        ) -> Result<SourceReadiness, String> {
+            Ok(SourceReadiness {
+                system: true,
+                microphone: true,
+            })
+        }
+
+        fn open_recorder(&mut self, path: &std::path::Path) -> Result<(), String> {
+            fs::File::create(path)
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        }
+
+        fn start_link(
+            &mut self,
+            call_id: &str,
+            options: &LinkOptions,
+            _generation: u64,
+        ) -> Result<(), String> {
+            self.starts
+                .lock()
+                .unwrap()
+                .push((call_id.to_owned(), options.clone()));
+            Ok(())
+        }
+
+        fn pause_link(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn resume_link(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn end_link(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn finish_recorder(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn stop_sources(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    fn supervisor_config() -> crate::sidecar::RuntimeConfig {
+        crate::sidecar::SidecarSupervisor::runtime_config(
+            crate::settings::ProviderSettings {
+                provider: crate::settings::ProviderKind::AssemblyAi,
+                model: "universal-streaming".to_owned(),
+                language: Some("en".to_owned()),
+                azure_region: None,
+                diarize_system: false,
+                diarize_mic: false,
+            },
+            "test-provider-key".to_owned(),
+        )
+    }
+
+    fn supervised_service(app_data: &std::path::Path) -> (AppCapture, SupervisedStarts) {
+        fs::create_dir_all(app_data).expect("test app data directory is created");
+        let marker = app_data.join("sidecar-generation");
+        let script = format!(
+            "if [ -f '{marker}' ]; then printf 'SIDECAR_READY port=43124 token=d4e5f6\\n'; else : > '{marker}'; printf 'SIDECAR_READY port=43123 token=a1b2c3\\n'; fi; exec 1>&-; sleep 30",
+            marker = marker.display(),
+        );
+        let sidecar = Arc::new(crate::sidecar::SidecarSupervisor::new(
+            crate::sidecar::SidecarCommand::new("/bin/sh", ["-c", &script]),
+        ));
+        sidecar
+            .spawn(supervisor_config())
+            .expect("fake supervisor starts");
+        let starts = Arc::new(Mutex::new(Vec::new()));
+        let capture = AppCapture {
+            app_data_dir: app_data.to_owned(),
+            backend: Arc::new(Mutex::new(Box::new(SupervisedBackend {
+                starts: starts.clone(),
+            }))),
+            operation: Mutex::new(()),
+            selection: Mutex::new(CaptureDeviceSelection::default()),
+            state: Arc::new(Mutex::new(CaptureState::default())),
+            emit_snapshot: Arc::new(|_| {}),
+            sidecar: Some(sidecar),
+        };
+        (capture, starts)
+    }
+
+    fn wait_until(description: &str, condition: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !condition() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for {description}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     #[test]
