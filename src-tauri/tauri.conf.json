@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "identifier": "com.osslma.desktop",
   "build": {
-    "frontendDist": "ui"
+    "frontendDist": "ui",
+    "beforeBundleCommand": "uv run --with pyinstaller python scripts/build_sidecar.py"
   },
   "app": {
     "withGlobalTauri": true,
@@ -22,10 +23,7 @@
     "targets": ["app"],
     "icon": ["icons/icon.png"],
     "resources": {
-      "../python/sidecar": "python/sidecar",
-      "../python/lma_stt": "python/lma_stt",
-      "../python/lma_pipeline": "python/lma_pipeline",
-      "../contracts": "contracts"
+      "../target/sidecar/sidecar": "sidecar"
     },
     "macOS": {
       "minimumSystemVersion": "13.0"
