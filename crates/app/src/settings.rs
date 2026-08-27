@@ -251,12 +251,6 @@ impl SettingsRepository {
     }
 
     fn from_connection(connection: Connection) -> Result<Self, SettingsError> {
-        connection.execute_batch(
-            "CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value_json TEXT NOT NULL
-            )",
-        )?;
         Ok(Self {
             connection: Mutex::new(connection),
         })
@@ -272,8 +266,12 @@ impl SettingsRepository {
             )
             .optional()?;
         match value {
-            Some(value) => serde_json::from_str(&value)
-                .map_err(|error| SettingsError::Storage(error.to_string())),
+            Some(value) => {
+                let settings: ProviderSettings = serde_json::from_str(&value)
+                    .map_err(|error| SettingsError::Storage(error.to_string()))?;
+                settings.validate()?;
+                Ok(settings)
+            }
             None => Ok(ProviderSettings::default()),
         }
     }
@@ -293,6 +291,7 @@ impl SettingsRepository {
 
 #[cfg(test)]
 mod tests {
+    use rusqlite::{params, Connection};
     use serde_json::Value;
 
     use super::{
@@ -311,9 +310,22 @@ mod tests {
         }
     }
 
+    fn repository() -> SettingsRepository {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE settings (
+                    key TEXT PRIMARY KEY,
+                    value_json TEXT NOT NULL
+                )",
+            )
+            .unwrap();
+        SettingsRepository::from_connection(connection).unwrap()
+    }
+
     #[test]
     fn public_settings_round_trip_without_secret_field() {
-        let repository = SettingsRepository::in_memory().unwrap();
+        let repository = repository();
         let settings = deepgram_settings();
 
         repository.save(&settings).unwrap();
@@ -343,7 +355,7 @@ mod tests {
 
     #[test]
     fn invalid_provider_settings_are_rejected_before_start() {
-        let repository = SettingsRepository::in_memory().unwrap();
+        let repository = repository();
         let empty_model = ProviderSettings {
             model: " ".to_owned(),
             ..deepgram_settings()
@@ -356,5 +368,31 @@ mod tests {
 
         assert!(repository.save(&empty_model).is_err());
         assert!(repository.save(&missing_azure_region).is_err());
+    }
+
+    #[test]
+    fn load_rejects_invalid_stored_provider_settings() {
+        let repository = repository();
+        let invalid_settings = ProviderSettings {
+            model: " ".to_owned(),
+            ..deepgram_settings()
+        };
+        repository
+            .connection
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO settings (key, value_json) VALUES (?1, ?2)",
+                params![
+                    super::PROVIDER_SETTINGS_KEY,
+                    serde_json::to_string(&invalid_settings).unwrap()
+                ],
+            )
+            .unwrap();
+
+        assert!(matches!(
+            repository.load(),
+            Err(super::SettingsError::InvalidSettings(_))
+        ));
     }
 }
