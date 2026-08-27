@@ -1,0 +1,27 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-format
+        name: ruff format (check)
+        entry: uv run ruff format --check
+        language: system
+        types: [python]
+
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check
+        language: system
+        types: [python]
+
+      - id: validate-config
+        name: validate JSON YAML TOML
+        entry: uv run python -c "import json, pathlib, sys, tomllib, yaml; files=sys.argv[1:]; [json.load(open(p)) if p.endswith('.json') else yaml.safe_load(open(p)) if p.endswith(('.yaml', '.yml')) else tomllib.load(open(p, 'rb')) for p in files]"
+        language: system
+        files: \.(json|ya?ml|toml)$
+
+      - id: pytest
+        name: pytest (pre-push)
+        entry: uv run pytest
+        language: system
+        stages: [pre-push]
+        pass_filenames: false

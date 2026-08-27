@@ -14,6 +14,7 @@ members = ["python/sidecar", "python/lma_stt", "python/lma_pipeline"]
 
 [dependency-groups]
 dev = [
+  "pre-commit>=4.0",
   "pytest>=8.3",
   "pytest-asyncio>=0.25",
   "jsonschema>=4.23",

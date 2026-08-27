@@ -5,7 +5,11 @@
 ```bash
 uv sync            # python workspace
 cargo build        # rust workspace
+uv run pre-commit install --hook-type pre-commit --hook-type pre-push
 ```
+
+Pre-commit runs formatting, lint, and configuration validation. Pre-push runs
+the full Python test suite.
 
 ## Ground rules
 

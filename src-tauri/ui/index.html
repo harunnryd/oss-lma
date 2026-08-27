@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>oss-lma</title>
+  <style>
+    :root { color-scheme: dark; font: 16px system-ui, sans-serif; }
+    body { margin: 0; min-height: 100vh; background: #111827; color: #f9fafb; }
+    main { max-width: 760px; margin: 0 auto; padding: 48px 28px; }
+    h1 { margin: 0 0 8px; font-size: 32px; }
+    p { color: #9ca3af; }
+    section { margin-top: 28px; padding: 22px; border: 1px solid #374151; border-radius: 14px; background: #1f2937; }
+    .status { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+    .badge { color: #34d399; font-weight: 700; text-transform: capitalize; }
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+    button { border: 0; border-radius: 8px; padding: 10px 15px; background: #34d399; color: #06251b; font-weight: 700; cursor: pointer; }
+    button.secondary { background: #374151; color: #f9fafb; }
+    button:disabled { cursor: not-allowed; opacity: .45; }
+    #message { min-height: 24px; margin-top: 18px; color: #fbbf24; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>oss-lma</h1>
+    <p>Desktop meeting capture</p>
+    <section>
+      <div class="status"><span>Capture status</span><span id="phase" class="badge">loading</span></div>
+      <div class="actions">
+        <button id="start">Start meeting</button>
+        <button id="pause" class="secondary">Pause</button>
+        <button id="resume" class="secondary">Resume</button>
+        <button id="stop" class="secondary">Stop</button>
+      </div>
+      <div class="actions">
+        <button id="permissions" class="secondary">Open microphone settings</button>
+        <button id="screen" class="secondary">Open screen recording settings</button>
+      </div>
+      <div id="message" role="status"></div>
+    </section>
+  </main>
+  <script>
+    const invoke = window.__TAURI__?.core?.invoke;
+    const phase = document.querySelector('#phase');
+    const message = document.querySelector('#message');
+    const buttons = [...document.querySelectorAll('button')];
+    const setMessage = value => { message.textContent = value || ''; };
+    const refresh = async () => {
+      if (!invoke) { phase.textContent = 'backend unavailable'; return; }
+      try {
+        const status = await invoke('capture_status');
+        phase.textContent = status.phase;
+        const active = ['active', 'paused'].includes(status.phase);
+        document.querySelector('#start').disabled = active || status.phase === 'starting';
+        document.querySelector('#pause').disabled = status.phase !== 'active';
+        document.querySelector('#resume').disabled = status.phase !== 'paused';
+        document.querySelector('#stop').disabled = !active;
+      } catch (error) { setMessage(String(error)); }
+    };
+    const settings = kind => invoke('open_capture_permission_settings', { kind }).catch(error => setMessage(String(error)));
+    document.querySelector('#permissions').onclick = () => settings('microphone');
+    document.querySelector('#screen').onclick = () => settings('screenRecording');
+    document.querySelector('#start').onclick = async () => {
+      try { await invoke('start_meeting', { options: { port: 8765, token: '', diarizeMicrophone: false } }); setMessage(''); await refresh(); }
+      catch (error) { setMessage(String(error)); }
+    };
+    document.querySelector('#pause').onclick = async () => { try { await invoke('pause_meeting'); await refresh(); } catch (error) { setMessage(String(error)); } };
+    document.querySelector('#resume').onclick = async () => { try { await invoke('resume_meeting'); await refresh(); } catch (error) { setMessage(String(error)); } };
+    document.querySelector('#stop').onclick = async () => { try { await invoke('stop_meeting'); await refresh(); } catch (error) { setMessage(String(error)); } };
+    refresh();
+  </script>
+</body>
+</html>
