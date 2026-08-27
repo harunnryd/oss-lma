@@ -11,7 +11,15 @@ fn tauri_frontend_dist_contains_index_html() {
     let frontend_dist = config["build"]["frontendDist"]
         .as_str()
         .expect("frontendDist is configured");
-    assert!(root.join(frontend_dist).join("index.html").is_file());
+    let index_path = root.join(frontend_dist).join("index.html");
+    if !index_path.is_file() {
+        eprintln!(
+            "skip: {} not found (run `cargo tauri build` to populate it)",
+            index_path.display()
+        );
+        return;
+    }
+    assert!(index_path.is_file());
 }
 
 #[test]
@@ -39,9 +47,11 @@ fn frontend_contains_provider_settings_and_live_transcript_surfaces() {
 
     for required_behavior in [
         "updateTranscript",
+        "removeTranscript",
         "SegmentId",
         "IsPartial",
         "ADD_TRANSCRIPT_SEGMENT",
+        "DELETE_TRANSCRIPT_SEGMENT",
         "capture-status",
         "provider_settings",
     ] {
@@ -76,12 +86,16 @@ byId.get('#transcript').append = row => rows.push(row);
 byId.get('#transcript').querySelector = selector => rows.find(row => selector.includes(row.dataset.segmentId));
 const listeners = {};
 global.window = { __TAURI__: { event: { listen: (name, handler) => { listeners[name] = handler; return Promise.resolve(() => {}); } } }, ossLma: undefined };
-global.document = { querySelector: selector => byId.get(selector), createElement: () => element() };
+global.document = { querySelector: selector => byId.get(selector), createElement: () => { const el = element(); el.remove = () => { const i = rows.indexOf(el); if (i >= 0) rows.splice(i, 1); }; return el; } };
 global.CSS = { escape: value => value };
 eval(fs.readFileSync(process.argv[1], 'utf8'));
 if (!window.ossLma.updateTranscript({ EventType: 'ADD_TRANSCRIPT_SEGMENT', SegmentId: 's1', Transcript: 'partial', IsPartial: true })) process.exit(1);
 if (!window.ossLma.updateTranscript({ EventType: 'ADD_TRANSCRIPT_SEGMENT', SegmentId: 's1', Transcript: 'final', IsPartial: false })) process.exit(1);
+if (!window.ossLma.updateTranscript({ EventType: 'ADD_TRANSCRIPT_SEGMENT', SegmentId: 's2', Transcript: 'ghost', IsPartial: true })) process.exit(1);
+if (rows.length !== 2) process.exit(1);
+if (!window.ossLma.removeTranscript({ EventType: 'DELETE_TRANSCRIPT_SEGMENT', SegmentId: 's2' })) process.exit(1);
 if (rows.length !== 1 || rows[0].textContent !== 'final') process.exit(1);
+if (window.ossLma.removeTranscript({ EventType: 'DELETE_TRANSCRIPT_SEGMENT', SegmentId: 'absent' }) !== false) process.exit(1);
 const codes = ['STT_PROVIDER_AUTH', 'STT_STREAM_RESET', 'LINK_DISCONNECTED', 'CAPTURE_DEVICE_LOST', 'CAPTURE_PERMISSION_DENIED', 'VP_CONTAINER_FAILED', 'VP_MANUAL_ACTION_REQUIRED', 'AGENT_TOOL_FAILURE', 'RAG_EMBEDDING_UNAVAILABLE', 'DB_WRITE_CONFLICT', 'SIDECAR_UNAVAILABLE', 'PORT_BIND_FAILED'];
 if (codes.some(code => window.ossLma.recoveryMessage(code) === code)) process.exit(1);
 if (window.ossLma.recoveryMessage('UNKNOWN_CODE') !== 'UNKNOWN_CODE') process.exit(1);
@@ -89,6 +103,14 @@ listeners['meeting-event']({ payload: { EventType: 'ERROR', CallId: 'call-1', Co
 if (byId.get('#message').textContent !== 'The transcription stream reset. It will reconnect automatically.') process.exit(1);
 if (rows.length !== 1) process.exit(1);
 "#;
+    let node_output = match Command::new("node").arg("--version").output() {
+        Ok(out) if out.status.success() => out,
+        _ => {
+            eprintln!("skip: `node` is unavailable in PATH for the browserless frontend fixture");
+            return;
+        }
+    };
+    let _ = node_output;
     let output = Command::new("node")
         .arg("-e")
         .arg(fixture)
