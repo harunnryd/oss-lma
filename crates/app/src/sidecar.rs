@@ -5,7 +5,7 @@ use std::{
     process::{Child, Command, Stdio},
     sync::{mpsc, Mutex},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use serde::Serialize;
@@ -13,6 +13,9 @@ use serde::Serialize;
 use crate::settings::{ProviderKind, ProviderSettings};
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
+const RESPAWN_CAP: u32 = 5;
+const RESPAWN_WINDOW: Duration = Duration::from_secs(60);
+const RESPAWN_BACKOFF: Duration = Duration::from_millis(200);
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct SecretString(String);
@@ -131,7 +134,10 @@ struct SupervisorState {
     child: Option<Child>,
     endpoint: Option<SidecarEndpoint>,
     config: Option<RuntimeConfig>,
-    last_error: Option<SupervisorError>,
+    last_error: Option<String>,
+    respawn_count: u32,
+    first_respawn_at: Option<Instant>,
+    next_respawn_at: Option<Instant>,
 }
 
 #[derive(Debug)]
@@ -141,6 +147,7 @@ pub(crate) enum SupervisorError {
     InvalidReadiness,
     StartupTimeout,
     Shutdown(std::io::Error),
+    RespawnLimitExceeded,
 }
 
 impl fmt::Display for SupervisorError {
@@ -158,6 +165,9 @@ impl fmt::Display for SupervisorError {
                 formatter.write_str("sidecar did not become ready before startup timed out")
             }
             Self::Shutdown(error) => write!(formatter, "sidecar could not stop: {error}"),
+            Self::RespawnLimitExceeded => formatter.write_str(
+                "sidecar respawn limit exceeded; manual restart required",
+            ),
         }
     }
 }
@@ -187,11 +197,61 @@ impl SidecarSupervisor {
                 endpoint: None,
                 config: None,
                 last_error: None,
+                respawn_count: 0,
+                first_respawn_at: None,
+                next_respawn_at: None,
             }),
         }
     }
 
     pub(crate) fn spawn(&self, config: RuntimeConfig) -> Result<SidecarEndpoint, SupervisorError> {
+        // Step 1: honor any backoff window before claiming the lock so
+        // shutdown can still proceed during the sleep.
+        let backoff_target = {
+            let state = self.state.lock().unwrap();
+            state.next_respawn_at
+        };
+        if let Some(next_at) = backoff_target {
+            if let Some(remaining) = next_at.checked_duration_since(Instant::now()) {
+                std::thread::sleep(remaining);
+            }
+        }
+
+        // Step 2: hold the lock through the spawn so two concurrent
+        // callers cannot both observe an empty endpoint and race to
+        // replace each other's freshly spawned children.
+        let mut state = self.state.lock().unwrap();
+        let result = self.spawn_into_locked(&mut state, config);
+
+        // Step 3: every spawn attempt counts toward the cap so a
+        // successful-but-immediately-exiting child cannot loop forever.
+        let now = Instant::now();
+        match state.first_respawn_at {
+            Some(first) if now.duration_since(first) <= RESPAWN_WINDOW => {
+                state.respawn_count = state.respawn_count.saturating_add(1);
+            }
+            _ => {
+                state.respawn_count = 1;
+                state.first_respawn_at = Some(now);
+            }
+        }
+        state.next_respawn_at = Some(now + RESPAWN_BACKOFF);
+        if let Err(ref error) = result {
+            state.last_error = Some(format!("{error}"));
+        }
+        // Cap applies only when this attempt itself failed; a healthy
+        // respawn resets nothing and still counts.
+        if state.respawn_count > RESPAWN_CAP && result.is_err() {
+            return Err(SupervisorError::RespawnLimitExceeded);
+        }
+        result
+    }
+
+    fn spawn_into_locked(
+        &self,
+        state: &mut SupervisorState,
+        config: RuntimeConfig,
+    ) -> Result<SidecarEndpoint, SupervisorError> {
         let mut child = self.command.start()?;
         forward_stderr(child.stderr.take());
         if let Err(error) = write_runtime_config(child.stdin.take(), &config) {
@@ -206,7 +266,8 @@ impl SidecarSupervisor {
             }
         };
 
-        let mut state = self.state.lock().unwrap();
+        // Caller holds the lock, so no other thread can race the
+        // previous-child takeover.
         if let Some(mut previous) = state.child.take() {
             terminate(&mut previous);
         }
@@ -218,6 +279,8 @@ impl SidecarSupervisor {
     }
 
     pub(crate) fn endpoint(&self) -> Option<SidecarEndpoint> {
+        // Hold the lock through the entire respawn so concurrent
+        // callers cannot race the spawn_into_locked takeover.
         let mut state = self.state.lock().unwrap();
         let exited = state
             .child
@@ -230,15 +293,30 @@ impl SidecarSupervisor {
         if state.endpoint.is_some() {
             return state.endpoint.clone();
         }
-        let config = state.config.clone()?;
-        drop(state);
-        match self.spawn(config) {
-            Ok(endpoint) => Some(endpoint),
-            Err(error) => {
-                self.state.lock().unwrap().last_error = Some(error);
-                None
+        // Cap pre-check: refuse to trigger another automatic respawn
+        // when we have already burned through RESPAWN_CAP attempts
+        // inside the recent window.
+        if state.respawn_count > RESPAWN_CAP {
+            return None;
+        }
+        let config = state.config.as_ref()?.clone();
+        let result = self.spawn_into_locked(&mut state, config);
+
+        let now = Instant::now();
+        match state.first_respawn_at {
+            Some(first) if now.duration_since(first) <= RESPAWN_WINDOW => {
+                state.respawn_count = state.respawn_count.saturating_add(1);
+            }
+            _ => {
+                state.respawn_count = 1;
+                state.first_respawn_at = Some(now);
             }
         }
+        state.next_respawn_at = Some(now + RESPAWN_BACKOFF);
+        if let Err(ref error) = result {
+            state.last_error = Some(format!("{error}"));
+        }
+        result.ok()
     }
 
     pub(crate) fn respawn(
@@ -253,6 +331,11 @@ impl SidecarSupervisor {
         let mut state = self.state.lock().unwrap();
         state.endpoint = None;
         state.config = None;
+        // Intentional shutdown: clear the respawn counter so a future
+        // explicit respawn() does not inherit a near-cap state.
+        state.respawn_count = 0;
+        state.first_respawn_at = None;
+        state.next_respawn_at = None;
         if let Some(mut child) = state.child.take() {
             let kill_error = child.kill().err();
             child.wait().map_err(SupervisorError::Shutdown)?;
@@ -507,6 +590,64 @@ mod tests {
         assert_eq!(endpoint.port(), 43125);
         supervisor.shutdown().unwrap();
         let _ = std::fs::remove_file(marker);
+    }
+
+    #[test]
+    fn endpoint_caps_respawn_attempts_after_repeated_failures() {
+        // Shell exits 0 immediately after the ready line, so every
+        // subsequent endpoint() call would otherwise respawn forever.
+        let supervisor = SidecarSupervisor::with_command(shell(
+            "printf 'SIDECAR_READY port=43123 token=abc123\n'; exit 0",
+        ));
+        supervisor.spawn(config("provider-secret")).unwrap();
+
+        // 5 respawn attempts allowed; the 6th must be capped.
+        for _ in 0..5 {
+            std::thread::sleep(Duration::from_millis(20));
+            assert!(supervisor.endpoint().is_some(), "first five attempts succeed");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(
+            supervisor.endpoint().is_none(),
+            "sixth attempt within the window is capped"
+        );
+        supervisor.shutdown().unwrap();
+    }
+
+    #[test]
+    fn shutdown_resets_the_respawn_cap() {
+        let supervisor = SidecarSupervisor::with_command(shell(
+            "printf 'SIDECAR_READY port=43123 token=abc123\n'; exit 0",
+        ));
+        supervisor.spawn(config("provider-secret")).unwrap();
+        for _ in 0..5 {
+            std::thread::sleep(Duration::from_millis(20));
+            supervisor.endpoint();
+        }
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(supervisor.endpoint().is_none(), "cap was reached");
+
+        supervisor.shutdown().unwrap();
+
+        // After shutdown we should be able to spawn again from scratch.
+        let endpoint = supervisor.spawn(config("fresh-secret")).unwrap();
+        assert_eq!(endpoint.port(), 43123);
+        supervisor.shutdown().unwrap();
+    }
+
+    #[test]
+    fn spawn_rejects_when_cap_reached() {
+        // Child that exits before printing readiness; spawn() will fail
+        // with StartupTimeout or InvalidReadiness, and the cap accounting
+        // still applies so we can prove the fast-fail path.
+        let supervisor = SidecarSupervisor::with_command(shell(
+            "printf 'unrelated output\n'; exit 1",
+        ));
+        for _ in 0..5 {
+            let _ = supervisor.spawn(config("provider-secret"));
+        }
+        let result = supervisor.spawn(config("provider-secret"));
+        assert!(matches!(result, Err(SupervisorError::RespawnLimitExceeded)));
     }
 
     #[test]
