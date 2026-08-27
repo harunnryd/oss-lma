@@ -38,7 +38,9 @@ def test_max_bind_attempts_matches_catalog():
 async def test_ready_line_is_the_only_stdout_output():
     sink = io.StringIO()
     stop = asyncio.Event()
-    task = asyncio.create_task(run_server(lambda ctx: ScriptedEngine([]), stop=stop, ready_sink=sink))
+    task = asyncio.create_task(
+        run_server(lambda ctx: ScriptedEngine([]), stop=stop, ready_sink=sink)
+    )
     try:
         await eventually(lambda: sink.getvalue() != "")
         assert READY_LINE.fullmatch(sink.getvalue()) is not None
@@ -47,6 +49,20 @@ async def test_ready_line_is_the_only_stdout_output():
         port, token = await task
     assert isinstance(port, int)
     assert re.fullmatch(r"[0-9a-f]{32}", token) is not None
+
+
+async def test_caller_owned_ready_sink_remains_readable_after_server_stops():
+    sink = io.StringIO()
+    stop = asyncio.Event()
+    task = asyncio.create_task(
+        run_server(lambda ctx: ScriptedEngine([]), stop=stop, ready_sink=sink)
+    )
+    await eventually(lambda: sink.getvalue() != "")
+    stop.set()
+
+    await task
+
+    assert READY_LINE.fullmatch(sink.getvalue()) is not None
 
 
 async def test_upgrade_without_token_gets_401():
@@ -109,7 +125,9 @@ async def test_graceful_stop_closes_live_sessions_with_1000():
     stop, task, port, token = await spawn_sidecar(factory)
     try:
         async with connect(f"ws://127.0.0.1:{port}/ws?token={token}") as ws:
-            await ws.send(json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000}))
+            await ws.send(
+                json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000})
+            )
             await eventually(lambda: len(engines) == 1)
             stop.set()
             with pytest.raises(websockets.ConnectionClosed) as exc_info:
@@ -166,7 +184,9 @@ async def test_record_meeting_flag_threads_through_to_session():
     )
     try:
         async with connect(f"ws://127.0.0.1:{port}/ws?token={token}") as ws:
-            await ws.send(json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000}))
+            await ws.send(
+                json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000})
+            )
             await eventually(lambda: True)
     finally:
         stop.set()

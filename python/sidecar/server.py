@@ -1,4 +1,5 @@
 import asyncio
+import os
 import random
 import secrets
 import sys
@@ -94,7 +95,7 @@ async def run_server(
     sink.write(f"SIDECAR_READY port={bound_port} token={token}\n")
     sink.flush()
     if ready_sink is None:
-        sink.close()
+        os.close(sink.fileno())
     try:
         if stop is None:
             await asyncio.Event().wait()
