@@ -21,6 +21,12 @@
     "active": true,
     "targets": ["app"],
     "icon": ["icons/icon.png"],
+    "resources": {
+      "../python/sidecar": "python/sidecar",
+      "../python/lma_stt": "python/lma_stt",
+      "../python/lma_pipeline": "python/lma_pipeline",
+      "../contracts": "contracts"
+    },
     "macOS": {
       "minimumSystemVersion": "13.0"
     }

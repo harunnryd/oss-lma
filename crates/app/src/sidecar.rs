@@ -1,6 +1,7 @@
 use std::{
     fmt,
     io::{BufRead, BufReader, Write},
+    path::PathBuf,
     process::{Child, Command, Stdio},
     sync::{mpsc, Mutex},
     thread,
@@ -56,11 +57,29 @@ pub(crate) struct RuntimeConfig {
 pub(crate) struct SidecarCommand {
     program: String,
     args: Vec<String>,
+    pythonpath: Option<PathBuf>,
 }
 
 impl SidecarCommand {
     pub(crate) fn bundled() -> Self {
-        Self::new("python3", ["-m", "sidecar"])
+        let pythonpath = if cfg!(debug_assertions) {
+            Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../python"))
+        } else {
+            std::env::current_exe()
+                .ok()
+                .and_then(|path| path.parent().map(PathBuf::from))
+                .map(|executable_dir| {
+                    if cfg!(target_os = "macos") {
+                        executable_dir.join("../Resources/python")
+                    } else {
+                        executable_dir.join("resources/python")
+                    }
+                })
+        };
+        Self {
+            pythonpath,
+            ..Self::new("python3", ["-m", "sidecar"])
+        }
     }
     pub(crate) fn new(
         program: impl Into<String>,
@@ -69,17 +88,21 @@ impl SidecarCommand {
         Self {
             program: program.into(),
             args: args.into_iter().map(Into::into).collect(),
+            pythonpath: None,
         }
     }
 
     fn start(&self) -> Result<Child, SupervisorError> {
-        Command::new(&self.program)
+        let mut command = Command::new(&self.program);
+        command
             .args(&self.args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(SupervisorError::Spawn)
+            .stderr(Stdio::piped());
+        if let Some(path) = &self.pythonpath {
+            command.env("PYTHONPATH", path);
+        }
+        command.spawn().map_err(SupervisorError::Spawn)
     }
 }
 
@@ -361,6 +384,15 @@ mod tests {
             azure_region: None,
             api_key: SecretString::new(secret),
         }
+    }
+
+    #[test]
+    fn bundled_command_points_python_to_packaged_resources() {
+        let command = SidecarCommand::bundled();
+        let pythonpath = command
+            .pythonpath
+            .expect("bundled sidecar has Python resources");
+        assert!(pythonpath.ends_with("python"));
     }
 
     fn shell(script: &str) -> SidecarCommand {
