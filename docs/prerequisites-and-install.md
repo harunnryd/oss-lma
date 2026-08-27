@@ -48,13 +48,16 @@ it natively. The only gate is the microphone privacy setting.
 The system-audio source always follows the **current macOS default output**.
 Although the capture API reports output devices for diagnostics, choosing a
 specific system-output ID is rejected because ScreenCaptureKit cannot honor
-that override. Change the default output in macOS, then start a new meeting.
+that override. Changing the default output during a meeting rebuilds only the
+system source; the meeting remains active if that rebuild succeeds and fails if
+it does not.
 
 The microphone may be left on the macOS default or set to a listed microphone
 ID in Settings → Capture. An explicit microphone remains selected across
 default-device changes. Device selections cannot change while a meeting is
 active. If the selected microphone disconnects, capture rebuilds that source
-when it returns; the meeting stays active unless the rebuild itself fails.
+when the device changes; the meeting stays active unless the rebuild itself
+fails.
 
 ## Provider keys
 
@@ -129,7 +132,15 @@ explains how to gather state for each surface.
    no meeting row at all → audio never reached the sidecar, recheck step 3
    and the sidecar log.
 
-5. **Assistant answers one question** — open the chat panel on that meeting
+5. **Reconnect the selected microphone** — start a second recording, then
+   unplug and reconnect the microphone selected in Settings → Capture.
+   *Expected:* the meeting remains active and its microphone meter resumes
+   after the source rebuilds.
+   *If it fails:* stop the meeting, reselect the returned microphone, and
+   review [Troubleshooting → Capture](troubleshooting.md#capture) for
+   `CAPTURE_DEVICE_LOST`.
+
+6. **Assistant answers one question** — open the chat panel on that meeting
    and ask "What did we talk about?".
    *Expected:* a streamed answer referencing the sentence you spoke, with a
    thinking-step timeline.
