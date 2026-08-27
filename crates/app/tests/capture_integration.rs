@@ -24,6 +24,19 @@ use tokio_tungstenite::{accept_async, tungstenite::Message};
 
 const TICK_FRAMES: usize = 4_800;
 
+#[test]
+fn webview_start_options_cannot_override_supervised_endpoint() {
+    let options: app::commands::capture::StartMeetingOptions =
+        serde_json::from_value(serde_json::json!({
+            "diarizeMicrophone": true,
+            "port": 1,
+            "token": "untrusted",
+        }))
+        .expect("public capture options deserialize");
+
+    assert!(options.diarize_microphone);
+}
+
 struct TestDirectory(PathBuf);
 
 impl TestDirectory {
