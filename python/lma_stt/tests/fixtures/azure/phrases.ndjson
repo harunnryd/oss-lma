@@ -1,0 +1,1 @@
+{"RecognitionStatus":"Success","Offset":10000000,"Duration":5000000,"NBest":[{"Display":"Hello, world!","Words":[{"Word":"hello","Offset":10000000,"Duration":2000000},{"Word":"world","Offset":13000000,"Duration":2000000}]}]}

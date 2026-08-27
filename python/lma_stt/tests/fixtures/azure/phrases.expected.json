@@ -1,0 +1,3 @@
+[
+  {"result_id":"10000000-5000000","is_partial":false,"items":[{"content":"Hello,","type":"punctuation","start_time":1.0,"end_time":1.2,"speaker":null,"channel":"AGENT","result_id":"10000000-5000000"},{"content":"world!","type":"punctuation","start_time":1.3,"end_time":1.5,"speaker":null,"channel":"AGENT","result_id":"10000000-5000000"}]}
+]
