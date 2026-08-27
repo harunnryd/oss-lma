@@ -550,4 +550,85 @@ mod tests {
             .1
             .contains("\"CallId\":\"123e4567-e89b-12d3-a456-426614174000\""));
     }
+
+    #[tokio::test]
+    async fn replacing_the_endpoint_reissues_start_with_the_same_call_id() {
+        let first_listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("first listener binds");
+        let first_port = first_listener
+            .local_addr()
+            .expect("first listener address")
+            .port();
+        let second_listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("replacement listener binds");
+        let second_port = second_listener
+            .local_addr()
+            .expect("replacement listener address")
+            .port();
+        let call_id = "123e4567-e89b-12d3-a456-426614174000";
+
+        let first = tokio::spawn(async move {
+            let (stream, _) = first_listener
+                .accept()
+                .await
+                .expect("first client connects");
+            let mut socket = accept_async(stream)
+                .await
+                .expect("first websocket upgrades");
+            let Message::Text(start) = socket
+                .next()
+                .await
+                .expect("first START frame")
+                .expect("valid first frame")
+            else {
+                panic!("START must be text")
+            };
+            start.to_string()
+        });
+        let second = tokio::spawn(async move {
+            let (stream, _) = second_listener
+                .accept()
+                .await
+                .expect("replacement client connects");
+            let mut socket = accept_async(stream)
+                .await
+                .expect("replacement websocket upgrades");
+            let Message::Text(start) = socket
+                .next()
+                .await
+                .expect("replacement START frame")
+                .expect("valid replacement frame")
+            else {
+                panic!("START must be text")
+            };
+            start.to_string()
+        });
+
+        let client = LinkClient::new();
+        client
+            .start(call_id, first_port, "first-token", 48_000, false)
+            .await
+            .expect("initial start is queued");
+        timeout(Duration::from_secs(3), async {
+            while !first.is_finished() {
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("initial START arrives");
+        client
+            .start(call_id, second_port, "replacement-token", 48_000, false)
+            .await
+            .expect("replacement start is queued");
+
+        let first_start = first.await.expect("first server completes");
+        let second_start = timeout(Duration::from_secs(3), second)
+            .await
+            .expect("replacement START arrives")
+            .expect("replacement server completes");
+        assert!(first_start.contains(call_id));
+        assert!(second_start.contains(call_id));
+    }
 }

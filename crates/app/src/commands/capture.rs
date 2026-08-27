@@ -70,7 +70,7 @@ pub struct CaptureDeviceSelection {
     pub microphone_id: Option<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LinkOptions {
     pub port: u16,
     pub token: String,
@@ -85,6 +85,17 @@ pub struct StartMeetingOptions {
 }
 
 impl LinkOptions {
+    fn from_supervised_endpoint(
+        endpoint: crate::sidecar::SidecarEndpoint,
+        diarize_microphone: bool,
+    ) -> Self {
+        Self {
+            port: endpoint.port(),
+            token: endpoint.token().expose().to_owned(),
+            diarize_microphone,
+        }
+    }
+
     pub fn with_provider_settings(
         port: u16,
         token: String,
@@ -136,7 +147,7 @@ pub const CAPTURE_LEVELS_EVENT: &str = "capture-levels";
 
 pub struct AppCapture {
     app_data_dir: PathBuf,
-    backend: Mutex<Box<dyn CaptureBackend>>,
+    backend: Arc<Mutex<Box<dyn CaptureBackend>>>,
     operation: Mutex<()>,
     selection: Mutex<CaptureDeviceSelection>,
     state: Arc<Mutex<CaptureState>>,
@@ -180,7 +191,7 @@ impl AppCapture {
         let backend = NativeCaptureBackend::new(emit_levels, emit_failure)?;
         Ok(Self {
             app_data_dir,
-            backend: Mutex::new(Box::new(backend)),
+            backend: Arc::new(Mutex::new(Box::new(backend))),
             operation: Mutex::new(()),
             selection: Mutex::new(CaptureDeviceSelection::default()),
             state,
@@ -200,7 +211,7 @@ impl AppCapture {
     ) -> Self {
         Self {
             app_data_dir,
-            backend: Mutex::new(Box::new(backend)),
+            backend: Arc::new(Mutex::new(Box::new(backend))),
             operation: Mutex::new(()),
             selection: Mutex::new(CaptureDeviceSelection::default()),
             state: Arc::new(Mutex::new(CaptureState::default())),
@@ -246,12 +257,11 @@ impl AppCapture {
                 .lock()
                 .unwrap()
                 .set_sidecar_available(endpoint.is_some());
-            let endpoint = endpoint.ok_or_else(|| "sidecar is unavailable".to_owned())?;
-            LinkOptions {
-                port: endpoint.port(),
-                token: endpoint.token().expose().to_owned(),
-                diarize_microphone: options.diarize_microphone,
-            }
+            let endpoint = match endpoint {
+                Some(endpoint) => endpoint,
+                None => return self.fail(lma_link::ErrorCode::SidecarUnavailable.as_str()),
+            };
+            LinkOptions::from_supervised_endpoint(endpoint, options.diarize_microphone)
         } else {
             options
         };
@@ -319,10 +329,16 @@ impl AppCapture {
             };
         }
 
+        let call_id = meeting_id.clone();
         match self.update_state(|state| {
             state.activate_if_current(generation, readiness, meeting_id, recording_path)
         }) {
-            Ok(snapshot) => Ok(snapshot),
+            Ok(snapshot) => {
+                if self.sidecar.is_some() {
+                    self.watch_supervised_endpoint(generation, call_id, options);
+                }
+                Ok(snapshot)
+            }
             Err(error) => {
                 let mut backend = self.backend.lock().unwrap();
                 let _ = backend.end_link();
@@ -334,16 +350,14 @@ impl AppCapture {
     }
 
     fn start_from_webview(&self, options: StartMeetingOptions) -> Result<CaptureSnapshot, String> {
-        let endpoint = self
-            .sidecar
-            .as_ref()
-            .and_then(|sidecar| sidecar.endpoint())
-            .ok_or_else(|| "sidecar is unavailable".to_owned())?;
-        self.start(LinkOptions {
-            port: endpoint.port(),
-            token: endpoint.token().expose().to_owned(),
-            diarize_microphone: options.diarize_microphone,
-        })
+        let endpoint = match self.sidecar.as_ref().and_then(|sidecar| sidecar.endpoint()) {
+            Some(endpoint) => endpoint,
+            None => return self.fail(lma_link::ErrorCode::SidecarUnavailable.as_str()),
+        };
+        self.start(LinkOptions::from_supervised_endpoint(
+            endpoint,
+            options.diarize_microphone,
+        ))
     }
 
     pub fn pause(&self) -> Result<CaptureSnapshot, String> {
@@ -437,6 +451,101 @@ impl AppCapture {
         let _ = backend.end_link();
         let _ = backend.finish_recorder();
         let _ = backend.stop_sources();
+    }
+
+    fn watch_supervised_endpoint(&self, generation: u64, call_id: String, options: LinkOptions) {
+        let sidecar = self.sidecar.as_ref().expect("sidecar is present").clone();
+        let backend = self.backend.clone();
+        let state = self.state.clone();
+        let emit_snapshot = self.emit_snapshot.clone();
+        std::thread::spawn(move || {
+            let mut options = options;
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                let phase = {
+                    let state = state.lock().unwrap();
+                    if state.generation() != generation {
+                        return;
+                    }
+                    state.snapshot().phase
+                };
+                if !matches!(
+                    phase,
+                    crate::capture_state::CapturePhase::Active
+                        | crate::capture_state::CapturePhase::Paused
+                ) {
+                    return;
+                }
+
+                let endpoint = sidecar.endpoint();
+                let Some(endpoint) = endpoint else {
+                    fail_watched_session(
+                        &backend,
+                        &state,
+                        &emit_snapshot,
+                        generation,
+                        lma_link::ErrorCode::SidecarUnavailable.as_str(),
+                    );
+                    return;
+                };
+                let replacement =
+                    LinkOptions::from_supervised_endpoint(endpoint, options.diarize_microphone);
+                if replacement == options {
+                    continue;
+                }
+
+                let result = backend
+                    .lock()
+                    .unwrap()
+                    .start_link(&call_id, &replacement, generation);
+                if result.is_err() {
+                    fail_watched_session(
+                        &backend,
+                        &state,
+                        &emit_snapshot,
+                        generation,
+                        lma_link::ErrorCode::SidecarUnavailable.as_str(),
+                    );
+                    return;
+                }
+                if phase == crate::capture_state::CapturePhase::Paused
+                    && backend.lock().unwrap().pause_link().is_err()
+                {
+                    fail_watched_session(
+                        &backend,
+                        &state,
+                        &emit_snapshot,
+                        generation,
+                        lma_link::ErrorCode::SidecarUnavailable.as_str(),
+                    );
+                    return;
+                }
+                options = replacement;
+            }
+        });
+    }
+}
+
+fn fail_watched_session(
+    backend: &Mutex<Box<dyn CaptureBackend>>,
+    state: &Mutex<CaptureState>,
+    emit_snapshot: &SnapshotEmitter,
+    generation: u64,
+    error: &str,
+) {
+    let snapshot = {
+        let mut state = state.lock().unwrap();
+        state.set_sidecar_available(false);
+        state
+            .fail_if_current(generation, error)
+            .then(|| state.snapshot())
+    };
+    if let Some(snapshot) = snapshot {
+        let mut backend = backend.lock().unwrap();
+        let _ = backend.end_link();
+        let _ = backend.finish_recorder();
+        let _ = backend.stop_sources();
+        emit_snapshot(&snapshot);
     }
 }
 
@@ -742,6 +851,7 @@ struct NativeWorker {
     mixer: lma_capture::Mixer,
     recorder: Option<lma_capture::WavRecorder>,
     link: Option<lma_link::LinkClient>,
+    link_events: Option<tokio::sync::broadcast::Receiver<lma_link::LinkEvent>>,
     levels: LevelMeters,
 }
 
@@ -764,6 +874,7 @@ impl NativeWorker {
             mixer: lma_capture::Mixer::new(),
             recorder: None,
             link: None,
+            link_events: None,
             levels: LevelMeters {
                 system: 0.0,
                 microphone: 0.0,
@@ -800,6 +911,7 @@ impl NativeWorker {
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             }
             self.process_source_events();
+            self.process_link_events();
             self.process_audio();
         }
     }
@@ -863,7 +975,10 @@ impl NativeWorker {
                     Ok::<_, lma_link::LinkError>(link)
                 });
                 let result = link
-                    .map(|link| self.link = Some(link))
+                    .map(|link| {
+                        self.link_events = Some(link.subscribe());
+                        self.link = Some(link);
+                    })
                     .map_err(|error| error.to_string());
                 let _ = reply.send(result);
             }
@@ -981,6 +1096,24 @@ impl NativeWorker {
         }
     }
 
+    fn process_link_events(&mut self) {
+        let error = self.link_events.as_mut().and_then(|events| loop {
+            match events.try_recv() {
+                Ok(lma_link::LinkEvent::Error { code, .. })
+                    if code != lma_link::ErrorCode::SttStreamReset =>
+                {
+                    break Some(code)
+                }
+                Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break None,
+                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break None,
+            }
+        });
+        if let Some(error) = error {
+            self.fail_session(error.as_str().to_owned());
+        }
+    }
+
     fn push_frames(&mut self, channel: lma_capture::SourceChannel, frames: &[f32]) {
         for chunk in self.mixer.push(channel, frames) {
             if let Err(error) = self.write_chunk(&chunk) {
@@ -1020,6 +1153,7 @@ impl NativeWorker {
         if let Some(link) = self.link.take() {
             let _ = link.end();
         }
+        self.link_events = None;
         if let Some(recorder) = self.recorder.as_mut() {
             let _ = recorder.finish();
         }
@@ -1237,6 +1371,27 @@ mod tests {
         assert!(LinkOptions::with_provider_settings(8765, "token".to_owned(), &settings).is_err());
     }
 
+    #[test]
+    fn webview_start_without_a_supervised_endpoint_uses_the_catalog_code() {
+        let (service, _) = service(
+            PermissionSnapshot::granted(),
+            SourceReadiness {
+                system: true,
+                microphone: true,
+            },
+            temporary_app_data("missing-supervisor"),
+        );
+
+        let error = service
+            .start_from_webview(super::StartMeetingOptions {
+                diarize_microphone: false,
+            })
+            .expect_err("webview start requires the private supervisor endpoint");
+
+        assert_eq!(error, lma_link::ErrorCode::SidecarUnavailable.as_str());
+        assert_eq!(service.status().phase, CapturePhase::Failed);
+    }
+
     impl LinkOptions {
         fn test_default() -> Self {
             Self {
@@ -1405,7 +1560,7 @@ mod tests {
         (
             AppCapture {
                 app_data_dir: app_data,
-                backend: Mutex::new(Box::new(backend)),
+                backend: Arc::new(Mutex::new(Box::new(backend))),
                 operation: Mutex::new(()),
                 selection: Mutex::new(CaptureDeviceSelection::default()),
                 state,
