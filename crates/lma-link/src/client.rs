@@ -12,6 +12,8 @@ type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 pub enum LinkError {
     #[error("link client is unavailable")]
     Unavailable,
+    #[error("sampling rate must be at least 8000 Hz, got {0}")]
+    InvalidSamplingRate(usize),
 }
 
 pub type Result<T> = std::result::Result<T, LinkError>;
@@ -47,7 +49,7 @@ struct FrameAssembler {
 impl FrameAssembler {
     fn new(rate: usize) -> Self {
         Self {
-            frame_bytes: StereoChunk::byte_len(rate),
+            frame_bytes: StereoChunk::byte_len(rate).max(4),
             pcm: Vec::new(),
         }
     }
@@ -89,6 +91,9 @@ impl LinkClient {
         rate: usize,
         diarization: bool,
     ) -> Result<()> {
+        if rate < 8_000 {
+            return Err(LinkError::InvalidSamplingRate(rate));
+        }
         let (reply, result) = oneshot::channel();
         self.commands
             .send(Command::Start(
@@ -423,6 +428,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rejects_sampling_rates_below_the_wire_contract_minimum() {
+        let client = LinkClient::new();
+        for rate in [0, 7_999] {
+            let error = client
+                .start(
+                    "123e4567-e89b-12d3-a456-426614174000",
+                    1,
+                    "token",
+                    rate,
+                    false,
+                )
+                .await
+                .expect_err("invalid rate is rejected before link setup");
+            assert!(matches!(error, super::LinkError::InvalidSamplingRate(value) if value == rate));
+        }
+    }
+
+    #[tokio::test]
     async fn reports_when_the_reconnect_buffer_drops_audio() {
         let client = LinkClient::new();
         let mut events = client.subscribe();
@@ -431,7 +454,7 @@ mod tests {
                 "123e4567-e89b-12d3-a456-426614174000",
                 1,
                 "token",
-                10,
+                8_000,
                 false,
             )
             .await
@@ -439,8 +462,8 @@ mod tests {
         for _ in 0..4 {
             client
                 .send_chunk(StereoChunk {
-                    pcm: vec![0; 40],
-                    frames: 10,
+                    pcm: vec![0; 32_000],
+                    frames: 8_000,
                 })
                 .expect("chunk is queued");
         }
