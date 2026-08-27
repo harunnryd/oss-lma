@@ -106,15 +106,18 @@ SAMPLES = {
         Code="STT_STREAM_RESET",
         Context={"attempt": 3},
     ),
+    "DELETE_TRANSCRIPT_SEGMENT": frame(
+        "DELETE_TRANSCRIPT_SEGMENT",
+        SegmentId="seg_0001",
+        Reason="STALE_PARTIAL",
+    ),
 }
 
 
 def schema_event_types() -> set[str]:
     schema = load_schema()
     names = (branch["$ref"].split("/")[-1] for branch in schema["oneOf"])
-    return {
-        schema["$defs"][name]["properties"]["EventType"]["const"] for name in names
-    }
+    return {schema["$defs"][name]["properties"]["EventType"]["const"] for name in names}
 
 
 def build_validator() -> Draft202012Validator:

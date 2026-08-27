@@ -1,5 +1,6 @@
 import asyncio
 import os
+import resource
 import signal
 import sys
 from collections.abc import Callable
@@ -12,9 +13,26 @@ from lma_stt.types import MeetingContext
 
 from sidecar.server import BindFailed, run_server
 from sidecar.storage.connection import open_db
-from sidecar.storage.crash_recovery import sweep_stale_partials
+from sidecar.storage.crash_recovery import PendingDeletes, sweep_stale_partials
 from sidecar.storage.migrations import apply_migrations
 from sidecar.storage.persistence import SqliteWriter
+
+
+def _disable_core_dumps() -> None:
+    """Suppress core dumps so secrets cannot leak via post-mortem state.
+
+    POSIX platforms honor RLIMIT_CORE; Windows has no equivalent and the
+    function becomes a no-op there. macOS additionally gates core dumps
+    behind /cores entitlements in some contexts, so we set the soft and
+    hard limits to zero to be safe.
+    """
+    if sys.platform == "win32":
+        return
+    try:
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    except (ValueError, OSError):
+        # Best-effort: never let this guard prevent startup.
+        pass
 
 
 def default_engine_factory(registry: EngineRegistry) -> Callable[[MeetingContext], SpeechEngine]:
@@ -41,6 +59,7 @@ def _record_meeting_enabled() -> bool:
 
 
 async def main(stdin: BinaryIO | None = None) -> int:
+    _disable_core_dumps()
     try:
         runtime_config = read_runtime_config(stdin if stdin is not None else sys.stdin.buffer)
         registry = EngineRegistry.from_runtime_config(runtime_config)
@@ -57,9 +76,15 @@ async def main(stdin: BinaryIO | None = None) -> int:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = open_db(db_path)
     apply_migrations(conn, Path(__file__).resolve().parent / "storage" / "migrations")
-    marked = sweep_stale_partials(conn)
-    if marked > 0:
-        print(f"recovered {marked} stale partial(s) from previous run", file=sys.stderr, flush=True)
+    pending_deletes = PendingDeletes()
+    swept = sweep_stale_partials(conn)
+    pending_deletes.push(swept)
+    if swept:
+        print(
+            f"recovered {len(swept)} stale partial(s) from previous run",
+            file=sys.stderr,
+            flush=True,
+        )
     writer = SqliteWriter(conn)
     record_enabled = _record_meeting_enabled()
 
@@ -69,6 +94,7 @@ async def main(stdin: BinaryIO | None = None) -> int:
             stop=stop,
             db_writer=writer,
             record_meeting=record_enabled,
+            pending_deletes=pending_deletes,
         )
     except BindFailed:
         return 1
