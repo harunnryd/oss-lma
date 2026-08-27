@@ -44,8 +44,14 @@ pub enum SourceEvent {
     Error(SourceKind, String),
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum NativeStopError {
+    Stopped(String),
+    Indeterminate(String),
+}
+
 pub trait NativeStream {
-    fn stop(&mut self) -> Result<(), String>;
+    fn stop(&mut self) -> Result<(), NativeStopError>;
 }
 
 pub trait NativeStreamEvents: Send + Sync {
@@ -176,21 +182,37 @@ impl SourceHandle {
     }
 
     pub fn stop(&mut self) -> Result<(), String> {
-        if let Some(stream) = self.stream.as_mut() {
-            if let Err(error) = stream.stop() {
+        let Some(stream) = self.stream.as_mut() else {
+            return Ok(());
+        };
+        match stream.stop() {
+            Ok(()) => {
+                self.stream = None;
+                let _ = self.events.send(SourceEvent::Stopped(self.kind));
+                Ok(())
+            }
+            Err(NativeStopError::Stopped(error)) => {
+                self.stream = None;
                 let _ = self
                     .events
                     .send(SourceEvent::Error(self.kind, error.clone()));
-                return Err(error);
+                Err(error)
             }
-            self.stream = None;
-            let _ = self.events.send(SourceEvent::Stopped(self.kind));
+            Err(NativeStopError::Indeterminate(error)) => {
+                let _ = self
+                    .events
+                    .send(SourceEvent::Error(self.kind, error.clone()));
+                Err(error)
+            }
         }
-        Ok(())
     }
 
     pub fn rebuild(&mut self, selection: DeviceSelection) -> Result<(), String> {
-        self.stop()?;
+        if let Err(error) = self.stop() {
+            if self.is_active() {
+                return Err(error);
+            }
+        }
         match self.provider.start(
             self.kind,
             &selection,
@@ -232,14 +254,14 @@ mod tests {
     };
 
     use super::{
-        DeviceSelection, MacSource, MonoFrames, NativeStream, NativeStreamEvents,
+        DeviceSelection, MacSource, MonoFrames, NativeStopError, NativeStream, NativeStreamEvents,
         NativeStreamProvider, SourceEvent, SourceKind,
     };
 
     type StreamAction = (SourceKind, &'static str, DeviceSelection);
     type StreamActions = Rc<RefCell<Vec<StreamAction>>>;
     type NativeObservers = Rc<RefCell<Vec<(SourceKind, Arc<dyn NativeStreamEvents>)>>>;
-    type StopResults = Rc<RefCell<VecDeque<Result<(), String>>>>;
+    type StopResults = Rc<RefCell<VecDeque<Result<(), NativeStopError>>>>;
 
     #[derive(Clone)]
     struct FakeStreams {
@@ -256,7 +278,7 @@ mod tests {
     }
 
     impl NativeStream for FakeStream {
-        fn stop(&mut self) -> Result<(), String> {
+        fn stop(&mut self) -> Result<(), NativeStopError> {
             self.actions
                 .borrow_mut()
                 .push((self.kind, "stop", self.selection.clone()));
@@ -285,7 +307,7 @@ mod tests {
         }
     }
 
-    fn stop_results(results: impl IntoIterator<Item = Result<(), String>>) -> StopResults {
+    fn stop_results(results: impl IntoIterator<Item = Result<(), NativeStopError>>) -> StopResults {
         Rc::new(RefCell::new(results.into_iter().collect()))
     }
 
@@ -368,7 +390,9 @@ mod tests {
         let provider = FakeStreams {
             actions: Rc::new(RefCell::new(Vec::new())),
             observers: Rc::new(RefCell::new(Vec::new())),
-            stop_results: stop_results([Err("native stop failed".into())]),
+            stop_results: stop_results([Err(NativeStopError::Indeterminate(
+                "native stop failed".into(),
+            ))]),
         };
         let (frames_tx, _frames_rx) = mpsc::channel();
         let (events_tx, events_rx) = mpsc::channel();
@@ -395,7 +419,9 @@ mod tests {
         let provider = FakeStreams {
             actions: actions.clone(),
             observers: Rc::new(RefCell::new(Vec::new())),
-            stop_results: stop_results([Err("native stop failed".into())]),
+            stop_results: stop_results([Err(NativeStopError::Indeterminate(
+                "native stop failed".into(),
+            ))]),
         };
         let (frames_tx, _frames_rx) = mpsc::channel();
         let (events_tx, events_rx) = mpsc::channel();
@@ -432,7 +458,10 @@ mod tests {
         let provider = FakeStreams {
             actions: actions.clone(),
             observers: Rc::new(RefCell::new(Vec::new())),
-            stop_results: stop_results([Err("native stop failed".into()), Ok(())]),
+            stop_results: stop_results([
+                Err(NativeStopError::Indeterminate("native stop failed".into())),
+                Ok(()),
+            ]),
         };
         let (frames_tx, _frames_rx) = mpsc::channel();
         let (events_tx, events_rx) = mpsc::channel();
@@ -479,5 +508,80 @@ mod tests {
             events_rx.recv().unwrap(),
             SourceEvent::Started(SourceKind::Microphone)
         );
+    }
+
+    #[test]
+    fn microphone_cleanup_error_does_not_leave_the_source_active() {
+        let provider = FakeStreams {
+            actions: Rc::new(RefCell::new(Vec::new())),
+            observers: Rc::new(RefCell::new(Vec::new())),
+            stop_results: stop_results([Err(NativeStopError::Stopped(
+                "tap removal failed".into(),
+            ))]),
+        };
+        let (frames_tx, _frames_rx) = mpsc::channel();
+        let (events_tx, events_rx) = mpsc::channel();
+        let source = MacSource::with_provider(SourceKind::Microphone, provider, events_tx);
+        let mut handle = source.start(DeviceSelection::Default, frames_tx);
+        assert_eq!(
+            events_rx.recv().unwrap(),
+            SourceEvent::Started(SourceKind::Microphone)
+        );
+
+        assert_eq!(handle.stop().unwrap_err(), "tap removal failed");
+
+        assert!(!handle.is_active());
+        assert_eq!(
+            events_rx.recv().unwrap(),
+            SourceEvent::Error(SourceKind::Microphone, "tap removal failed".into())
+        );
+        assert!(events_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn rebuild_starts_a_replacement_after_a_microphone_cleanup_error() {
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let provider = FakeStreams {
+            actions: actions.clone(),
+            observers: Rc::new(RefCell::new(Vec::new())),
+            stop_results: stop_results([Err(NativeStopError::Stopped(
+                "tap removal failed".into(),
+            ))]),
+        };
+        let (frames_tx, _frames_rx) = mpsc::channel();
+        let (events_tx, events_rx) = mpsc::channel();
+        let source = MacSource::with_provider(SourceKind::Microphone, provider, events_tx);
+        let mut handle = source.start(DeviceSelection::Default, frames_tx);
+        assert_eq!(
+            events_rx.recv().unwrap(),
+            SourceEvent::Started(SourceKind::Microphone)
+        );
+        actions.borrow_mut().clear();
+
+        handle
+            .rebuild(DeviceSelection::DeviceId("replacement-mic".into()))
+            .unwrap();
+
+        assert!(handle.is_active());
+        assert_eq!(
+            *actions.borrow(),
+            [
+                (SourceKind::Microphone, "stop", DeviceSelection::Default),
+                (
+                    SourceKind::Microphone,
+                    "start",
+                    DeviceSelection::DeviceId("replacement-mic".into())
+                )
+            ]
+        );
+        assert_eq!(
+            events_rx.recv().unwrap(),
+            SourceEvent::Error(SourceKind::Microphone, "tap removal failed".into())
+        );
+        assert_eq!(
+            events_rx.recv().unwrap(),
+            SourceEvent::Started(SourceKind::Microphone)
+        );
+        assert!(events_rx.try_recv().is_err());
     }
 }

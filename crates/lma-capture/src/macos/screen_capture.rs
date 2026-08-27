@@ -10,8 +10,8 @@ use cidre::sc::{StreamDelegate as _, StreamOutput as _};
 use cidre::{arc, cm, define_obj_type, dispatch, ns, objc, sc};
 
 use super::{
-    devices::DeviceWatcher, DeviceSelection, MacPermissions, MonoFrames, NativeStream,
-    NativeStreamEvents, SourceKind,
+    devices::DeviceWatcher, DeviceSelection, MacPermissions, MonoFrames, NativeStopError,
+    NativeStream, NativeStreamEvents, SourceKind,
 };
 
 const NATIVE_OPERATION_TIMEOUT: Duration = Duration::from_secs(15);
@@ -90,8 +90,9 @@ struct ScreenCaptureStream {
 }
 
 impl NativeStream for ScreenCaptureStream {
-    fn stop(&mut self) -> Result<(), String> {
+    fn stop(&mut self) -> Result<(), NativeStopError> {
         wait_for_stream(|completion| self.stream.stop_with_ch(completion))
+            .map_err(NativeStopError::Indeterminate)
     }
 }
 

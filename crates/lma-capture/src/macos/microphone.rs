@@ -6,8 +6,8 @@ use std::{
 use cidre::{av, core_audio::Device, define_obj_type, ns, objc};
 
 use super::{
-    devices::DeviceWatcher, DeviceSelection, MacPermissions, MonoFrames, NativeStream,
-    NativeStreamEvents, SourceKind,
+    devices::DeviceWatcher, DeviceSelection, MacPermissions, MonoFrames, NativeStopError,
+    NativeStream, NativeStreamEvents, SourceKind,
 };
 
 const TARGET_SAMPLE_RATE: f64 = 48_000.0;
@@ -26,11 +26,11 @@ struct MicrophoneStream {
 }
 
 impl NativeStream for MicrophoneStream {
-    fn stop(&mut self) -> Result<(), String> {
+    fn stop(&mut self) -> Result<(), NativeStopError> {
         let result = self
             .input
             .remove_tap_on_bus(0)
-            .map_err(|error| format!("{error:?}"));
+            .map_err(|error| NativeStopError::Stopped(format!("{error:?}")));
         self.engine.stop();
         result
     }
