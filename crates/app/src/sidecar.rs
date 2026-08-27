@@ -2,10 +2,7 @@ use std::{
     fmt,
     io::{BufRead, BufReader, Write},
     process::{Child, Command, Stdio},
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        mpsc, Arc, Mutex,
-    },
+    sync::{mpsc, Mutex},
     thread,
     time::Duration,
 };
@@ -89,7 +86,6 @@ impl SidecarCommand {
 pub(crate) struct SidecarSupervisor {
     command: SidecarCommand,
     state: Mutex<SupervisorState>,
-    stdout_violation: Arc<AtomicBool>,
 }
 
 struct SupervisorState {
@@ -153,19 +149,17 @@ impl SidecarSupervisor {
                 config: None,
                 last_error: None,
             }),
-            stdout_violation: Arc::new(AtomicBool::new(false)),
         }
     }
 
     pub(crate) fn spawn(&self, config: RuntimeConfig) -> Result<SidecarEndpoint, SupervisorError> {
         let mut child = self.command.start()?;
         forward_stderr(child.stderr.take());
-        self.stdout_violation.store(false, Ordering::Release);
         if let Err(error) = write_runtime_config(child.stdin.take(), &config) {
             terminate(&mut child);
             return Err(error);
         }
-        let endpoint = match read_readiness(child.stdout.take(), self.stdout_violation.clone()) {
+        let endpoint = match read_readiness(child.stdout.take()) {
             Ok(endpoint) => endpoint,
             Err(error) => {
                 terminate(&mut child);
@@ -186,15 +180,6 @@ impl SidecarSupervisor {
 
     pub(crate) fn endpoint(&self) -> Option<SidecarEndpoint> {
         let mut state = self.state.lock().unwrap();
-        if self.stdout_violation.load(Ordering::Acquire) {
-            if let Some(mut child) = state.child.take() {
-                terminate(&mut child);
-            }
-            state.endpoint = None;
-            state.config = None;
-            state.last_error = Some(SupervisorError::InvalidReadiness);
-            return None;
-        }
         let exited = state
             .child
             .as_mut()
@@ -307,31 +292,26 @@ impl<'a> From<&'a RuntimeConfig> for RuntimeConfigPayload<'a> {
 
 fn read_readiness(
     stdout: Option<std::process::ChildStdout>,
-    stdout_violation: Arc<AtomicBool>,
 ) -> Result<SidecarEndpoint, SupervisorError> {
     let stdout = stdout.ok_or(SupervisorError::InvalidReadiness)?;
-    let (sender, receiver) = mpsc::sync_channel(2);
+    let (sender, receiver) = mpsc::sync_channel(1);
     thread::spawn(move || {
-        let mut lines = BufReader::new(stdout).lines();
-        let first = match lines.next() {
-            Some(line) => line,
-            None => return,
-        };
-        if sender.send(first).is_err() {
-            return;
-        }
-        if lines.next().is_some() {
-            stdout_violation.store(true, Ordering::Release);
-        }
+        let lines = BufReader::new(stdout)
+            .lines()
+            .collect::<Result<Vec<_>, _>>();
+        let _ = sender.send(lines);
     });
-    let first = receiver
+    let lines = receiver
         .recv_timeout(STARTUP_TIMEOUT)
         .map_err(|error| match error {
             mpsc::RecvTimeoutError::Timeout => SupervisorError::StartupTimeout,
             mpsc::RecvTimeoutError::Disconnected => SupervisorError::InvalidReadiness,
         })?
         .map_err(|_| SupervisorError::InvalidReadiness)?;
-    parse_readiness(&first).ok_or(SupervisorError::InvalidReadiness)
+    if lines.len() != 1 {
+        return Err(SupervisorError::InvalidReadiness);
+    }
+    parse_readiness(&lines[0]).ok_or(SupervisorError::InvalidReadiness)
 }
 
 fn parse_readiness(line: &str) -> Option<SidecarEndpoint> {
@@ -384,22 +364,24 @@ mod tests {
     }
 
     fn shell(script: &str) -> SidecarCommand {
-        SidecarCommand::new("sh", ["-c", script])
+        SidecarCommand::new(
+            "sh",
+            ["-c", &format!("{script}; exec 1>&-; cat >/dev/null")],
+        )
     }
 
     #[test]
     fn parses_exactly_one_ready_line_and_rejects_malformed_output() {
         let supervisor = SidecarSupervisor::with_command(shell(
-            "printf 'SIDECAR_READY port=43123 token=abc123\\n'; cat >/dev/null",
+            "printf 'SIDECAR_READY port=43123 token=abc123\\n'",
         ));
         let endpoint = supervisor.spawn(config("provider-secret")).unwrap();
         assert_eq!(endpoint.port(), 43123);
         assert_eq!(endpoint.token().expose(), "abc123");
         supervisor.shutdown().unwrap();
 
-        let supervisor = SidecarSupervisor::with_command(shell(
-            "printf 'ready port=43123 token=abc123\\n'; cat >/dev/null",
-        ));
+        let supervisor =
+            SidecarSupervisor::with_command(shell("printf 'ready port=43123 token=abc123\\n'"));
         let error = match supervisor.spawn(config("provider-secret")) {
             Ok(_) => panic!("malformed readiness output must be rejected"),
             Err(error) => error,
@@ -410,7 +392,7 @@ mod tests {
     #[test]
     fn shutdown_kills_child_and_clears_endpoint() {
         let supervisor = SidecarSupervisor::with_command(shell(
-            "printf 'SIDECAR_READY port=43123 token=abc123\\n'; cat >/dev/null",
+            "printf 'SIDECAR_READY port=43123 token=abc123\\n'",
         ));
         supervisor.spawn(config("provider-secret")).unwrap();
 
@@ -447,22 +429,39 @@ mod tests {
     }
 
     #[test]
-    fn delayed_second_readiness_line_invalidates_and_cleans_up_the_session() {
+    fn immediate_second_readiness_line_is_rejected_before_spawn_returns() {
         let supervisor = SidecarSupervisor::with_command(shell(
-            "printf 'SIDECAR_READY port=43123 token=abc123\\n'; sleep 0.1; printf 'SIDECAR_READY port=43124 token=def456\\n'; sleep 30",
+            "printf 'SIDECAR_READY port=43123 token=abc123\\nSIDECAR_READY port=43124 token=def456\\n'",
         ));
-        supervisor.spawn(config("provider-secret")).unwrap();
-
-        std::thread::sleep(Duration::from_millis(150));
-
+        assert!(matches!(
+            supervisor.spawn(config("provider-secret")),
+            Err(SupervisorError::InvalidReadiness)
+        ));
         assert!(supervisor.endpoint().is_none());
-        assert!(supervisor.child_has_exited());
+    }
+
+    #[test]
+    fn failed_readiness_generation_cannot_invalidate_a_replacement() {
+        let marker =
+            std::env::temp_dir().join(format!("sidecar-generation-{}", uuid::Uuid::new_v4()));
+        let script = format!(
+            "if [ -f '{path}' ]; then printf 'SIDECAR_READY port=43125 token=fed456\\n'; else : > '{path}'; printf 'SIDECAR_READY port=43123 token=abc123\\nSIDECAR_READY port=43124 token=def456\\n'; fi",
+            path = marker.display()
+        );
+        let supervisor = SidecarSupervisor::with_command(shell(&script));
+        assert!(supervisor.spawn(config("provider-secret")).is_err());
+
+        let endpoint = supervisor.spawn(config("replacement-secret")).unwrap();
+
+        assert_eq!(endpoint.port(), 43125);
+        supervisor.shutdown().unwrap();
+        let _ = std::fs::remove_file(marker);
     }
 
     #[test]
     fn respawn_replaces_endpoint_without_exposing_token() {
         let supervisor = SidecarSupervisor::with_command(shell(
-            "cat >/dev/null & printf 'SIDECAR_READY port=43123 token=abc123\\n'; cat >/dev/null",
+            "printf 'SIDECAR_READY port=43123 token=abc123\\n'",
         ));
         supervisor.spawn(config("first-provider-secret")).unwrap();
 
