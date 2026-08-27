@@ -129,6 +129,13 @@ pub trait SecretStore: Send + Sync {
     fn get(&self, provider: ProviderKind) -> Result<String, SettingsError>;
     fn delete(&self, provider: ProviderKind) -> Result<(), SettingsError>;
     fn has(&self, provider: ProviderKind) -> bool;
+
+    fn replace(&self, provider: ProviderKind, secret: &str) -> Result<(), SettingsError> {
+        match self.delete(provider) {
+            Ok(()) | Err(SettingsError::MissingSecret(_)) => self.set(provider, secret),
+            Err(error) => Err(error),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -210,9 +217,11 @@ mod platform {
     }
 
     pub(super) fn delete(provider: ProviderKind) -> Result<(), SettingsError> {
-        entry(provider)?
-            .delete_credential()
-            .map_err(|error| SettingsError::SecretStore(error.to_string()))
+        match entry(provider)?.delete_credential() {
+            Ok(()) => Ok(()),
+            Err(keyring::Error::NoEntry) => Err(SettingsError::MissingSecret(provider)),
+            Err(error) => Err(SettingsError::SecretStore(error.to_string())),
+        }
     }
 }
 
@@ -291,13 +300,55 @@ impl SettingsRepository {
 
 #[cfg(test)]
 mod tests {
+    use std::{collections::HashMap, sync::Mutex};
+
     use rusqlite::{params, Connection};
     use serde_json::Value;
 
     use super::{
         InMemorySecretStore, ProviderKind, ProviderPublicSettings, ProviderSettings, SecretStore,
-        SettingsRepository,
+        SettingsError, SettingsRepository,
     };
+
+    #[derive(Default)]
+    struct DuplicateRejectingSecretStore {
+        secrets: Mutex<HashMap<ProviderKind, String>>,
+    }
+
+    impl SecretStore for DuplicateRejectingSecretStore {
+        fn set(&self, provider: ProviderKind, secret: &str) -> Result<(), SettingsError> {
+            let mut secrets = self.secrets.lock().unwrap();
+            if secrets.contains_key(&provider) {
+                return Err(SettingsError::SecretStore(
+                    "credential already exists".to_owned(),
+                ));
+            }
+            secrets.insert(provider, secret.to_owned());
+            Ok(())
+        }
+
+        fn get(&self, provider: ProviderKind) -> Result<String, SettingsError> {
+            self.secrets
+                .lock()
+                .unwrap()
+                .get(&provider)
+                .cloned()
+                .ok_or(SettingsError::MissingSecret(provider))
+        }
+
+        fn delete(&self, provider: ProviderKind) -> Result<(), SettingsError> {
+            self.secrets
+                .lock()
+                .unwrap()
+                .remove(&provider)
+                .map(|_| ())
+                .ok_or(SettingsError::MissingSecret(provider))
+        }
+
+        fn has(&self, provider: ProviderKind) -> bool {
+            self.secrets.lock().unwrap().contains_key(&provider)
+        }
+    }
 
     fn deepgram_settings() -> ProviderSettings {
         ProviderSettings {
@@ -351,6 +402,17 @@ mod tests {
         assert_eq!(secrets.get(provider).unwrap(), "test-secret");
         secrets.delete(provider).unwrap();
         assert!(!secrets.has(provider));
+    }
+
+    #[test]
+    fn replacing_an_existing_secret_works_when_the_store_rejects_duplicates() {
+        let secrets = DuplicateRejectingSecretStore::default();
+        let provider = ProviderKind::Deepgram;
+
+        secrets.set(provider, "old-secret").unwrap();
+        secrets.replace(provider, "new-secret").unwrap();
+
+        assert_eq!(secrets.get(provider).unwrap(), "new-secret");
     }
 
     #[test]

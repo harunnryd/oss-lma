@@ -1,9 +1,14 @@
 import json
+import sys
 from pathlib import Path
 
 import yaml
 
-CONTRACTS_ROOT = Path(__file__).resolve().parents[2] / "contracts"
+CONTRACTS_ROOT = (
+    Path(sys._MEIPASS) / "contracts"
+    if getattr(sys, "frozen", False)
+    else Path(__file__).resolve().parents[2] / "contracts"
+)
 
 
 class ContractsError(RuntimeError):
@@ -16,9 +21,7 @@ def _load(path: Path) -> dict:
     except OSError as exc:
         raise ContractsError(f"unreadable contract file: {path}") from exc
     try:
-        parsed = (
-            yaml.safe_load(raw) if path.suffix in {".yaml", ".yml"} else json.loads(raw)
-        )
+        parsed = yaml.safe_load(raw) if path.suffix in {".yaml", ".yml"} else json.loads(raw)
     except (yaml.YAMLError, json.JSONDecodeError) as exc:
         raise ContractsError(f"malformed contract file: {path}") from exc
     if not isinstance(parsed, dict):

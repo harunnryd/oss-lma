@@ -29,7 +29,7 @@ pub fn save_provider_settings(
             return Err("the provider API key cannot be empty".to_owned());
         }
         OsSecretStore
-            .set(settings.provider, &secret)
+            .replace(settings.provider, &secret)
             .map_err(|error| error.to_string())?;
     }
     state

@@ -57,29 +57,34 @@ pub(crate) struct RuntimeConfig {
 pub(crate) struct SidecarCommand {
     program: String,
     args: Vec<String>,
-    pythonpath: Option<PathBuf>,
+    pythonpath: Option<Vec<PathBuf>>,
 }
 
 impl SidecarCommand {
     pub(crate) fn bundled() -> Self {
-        let pythonpath = if cfg!(debug_assertions) {
-            Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../python"))
-        } else {
-            std::env::current_exe()
-                .ok()
-                .and_then(|path| path.parent().map(PathBuf::from))
-                .map(|executable_dir| {
-                    if cfg!(target_os = "macos") {
-                        executable_dir.join("../Resources/python")
-                    } else {
-                        executable_dir.join("resources/python")
-                    }
-                })
-        };
-        Self {
-            pythonpath,
-            ..Self::new("python3", ["-m", "sidecar"])
+        if cfg!(debug_assertions) {
+            let python_resources = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../python");
+            return Self {
+                pythonpath: Some(python_paths(python_resources)),
+                ..Self::new("python3", ["-m", "sidecar"])
+            };
         }
+        let sidecar = std::env::current_exe()
+            .ok()
+            .and_then(|path| path.parent().map(PathBuf::from))
+            .map(|executable_dir| {
+                if cfg!(target_os = "macos") {
+                    executable_dir.join("../Resources/sidecar/sidecar")
+                } else if cfg!(target_os = "windows") {
+                    executable_dir.join("resources/sidecar/sidecar.exe")
+                } else {
+                    executable_dir.join("resources/sidecar/sidecar")
+                }
+            });
+        let program = sidecar
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "sidecar".to_owned());
+        Self::new(program, std::iter::empty::<String>())
     }
     pub(crate) fn new(
         program: impl Into<String>,
@@ -99,11 +104,22 @@ impl SidecarCommand {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        if let Some(path) = &self.pythonpath {
-            command.env("PYTHONPATH", path);
+        if let Some(paths) = &self.pythonpath {
+            let pythonpath = std::env::join_paths(paths).map_err(|error| {
+                SupervisorError::Spawn(std::io::Error::new(std::io::ErrorKind::InvalidInput, error))
+            })?;
+            command.env("PYTHONPATH", pythonpath);
         }
         command.spawn().map_err(SupervisorError::Spawn)
     }
+}
+
+fn python_paths(root: PathBuf) -> Vec<PathBuf> {
+    vec![
+        root.clone(),
+        root.join("lma_stt"),
+        root.join("lma_pipeline"),
+    ]
 }
 
 pub(crate) struct SidecarSupervisor {
@@ -389,10 +405,13 @@ mod tests {
     #[test]
     fn bundled_command_points_python_to_packaged_resources() {
         let command = SidecarCommand::bundled();
-        let pythonpath = command
+        let pythonpaths = command
             .pythonpath
             .expect("bundled sidecar has Python resources");
-        assert!(pythonpath.ends_with("python"));
+        assert_eq!(pythonpaths.len(), 3);
+        assert!(pythonpaths[0].ends_with("python"));
+        assert!(pythonpaths[1].ends_with("python/lma_stt"));
+        assert!(pythonpaths[2].ends_with("python/lma_pipeline"));
     }
 
     fn shell(script: &str) -> SidecarCommand {

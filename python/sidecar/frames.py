@@ -1,4 +1,5 @@
 import json
+import sys
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -6,7 +7,11 @@ from pathlib import Path
 import jsonschema
 import yaml
 
-CONTRACTS_DIR = Path(__file__).resolve().parents[2] / "contracts"
+CONTRACTS_DIR = (
+    Path(sys._MEIPASS) / "contracts"
+    if getattr(sys, "frozen", False)
+    else Path(__file__).resolve().parents[2] / "contracts"
+)
 INVALID_FRAME_CODE = "LINK_DISCONNECTED"
 INVALID_FRAME_CONTEXT = {"reason": "invalid-frame"}
 INVALID_FRAME_CLOSE_CODE = 1008
@@ -125,7 +130,12 @@ def parse_frame(raw: str) -> Start | SpeakerChange | Pause | Resume | End | VpCo
         case "VP_COMMAND":
             return VpCommand(payload["TaskId"], payload["Command"], payload.get("Payload", {}))
         case "AGENT_QUERY":
-            return AgentQuery(payload["CallId"], payload["QueryId"], payload["Message"], payload.get("History", []))
+            return AgentQuery(
+                payload["CallId"],
+                payload["QueryId"],
+                payload["Message"],
+                payload.get("History", []),
+            )
     raise FrameError(f"unmapped-event-type:{event_type}")
 
 
