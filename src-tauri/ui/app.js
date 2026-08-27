@@ -85,7 +85,10 @@
   $('#stop').onclick = () => call('stop_meeting').then(updateControls).catch(error => setMessage(String(error)));
   if (listen) {
     listen('capture-status', ({ payload }) => updateControls(payload));
-    listen('meeting-event', ({ payload }) => updateTranscript(payload));
+    listen('meeting-event', ({ payload }) => {
+      if (payload.EventType === 'ADD_TRANSCRIPT_SEGMENT') updateTranscript(payload);
+      if (payload.EventType === 'ERROR') setMessage(recoveryMessage(payload.Code));
+    });
   }
   window.ossLma = { updateTranscript, recoveryMessage };
   refresh();
