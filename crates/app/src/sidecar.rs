@@ -2,7 +2,10 @@ use std::{
     fmt,
     io::{BufRead, BufReader, Write},
     process::{Child, Command, Stdio},
-    sync::{mpsc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc, Mutex,
+    },
     thread,
     time::Duration,
 };
@@ -12,7 +15,6 @@ use serde::Serialize;
 use crate::settings::{ProviderKind, ProviderSettings};
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
-const EXTRA_READINESS_WINDOW: Duration = Duration::from_millis(30);
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct SecretString(String);
@@ -87,6 +89,7 @@ impl SidecarCommand {
 pub(crate) struct SidecarSupervisor {
     command: SidecarCommand,
     state: Mutex<SupervisorState>,
+    stdout_violation: Arc<AtomicBool>,
 }
 
 struct SupervisorState {
@@ -150,18 +153,19 @@ impl SidecarSupervisor {
                 config: None,
                 last_error: None,
             }),
+            stdout_violation: Arc::new(AtomicBool::new(false)),
         }
     }
 
     pub(crate) fn spawn(&self, config: RuntimeConfig) -> Result<SidecarEndpoint, SupervisorError> {
         let mut child = self.command.start()?;
         forward_stderr(child.stderr.take());
+        self.stdout_violation.store(false, Ordering::Release);
         if let Err(error) = write_runtime_config(child.stdin.take(), &config) {
             terminate(&mut child);
             return Err(error);
         }
-        let readiness = read_readiness(child.stdout.take())?;
-        let endpoint = match readiness {
+        let endpoint = match read_readiness(child.stdout.take(), self.stdout_violation.clone()) {
             Ok(endpoint) => endpoint,
             Err(error) => {
                 terminate(&mut child);
@@ -182,6 +186,15 @@ impl SidecarSupervisor {
 
     pub(crate) fn endpoint(&self) -> Option<SidecarEndpoint> {
         let mut state = self.state.lock().unwrap();
+        if self.stdout_violation.load(Ordering::Acquire) {
+            if let Some(mut child) = state.child.take() {
+                terminate(&mut child);
+            }
+            state.endpoint = None;
+            state.config = None;
+            state.last_error = Some(SupervisorError::InvalidReadiness);
+            return None;
+        }
         let exited = state
             .child
             .as_mut()
@@ -294,14 +307,21 @@ impl<'a> From<&'a RuntimeConfig> for RuntimeConfigPayload<'a> {
 
 fn read_readiness(
     stdout: Option<std::process::ChildStdout>,
-) -> Result<Result<SidecarEndpoint, SupervisorError>, SupervisorError> {
+    stdout_violation: Arc<AtomicBool>,
+) -> Result<SidecarEndpoint, SupervisorError> {
     let stdout = stdout.ok_or(SupervisorError::InvalidReadiness)?;
     let (sender, receiver) = mpsc::sync_channel(2);
     thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().take(2) {
-            if sender.send(line).is_err() {
-                return;
-            }
+        let mut lines = BufReader::new(stdout).lines();
+        let first = match lines.next() {
+            Some(line) => line,
+            None => return,
+        };
+        if sender.send(first).is_err() {
+            return;
+        }
+        if lines.next().is_some() {
+            stdout_violation.store(true, Ordering::Release);
         }
     });
     let first = receiver
@@ -311,13 +331,7 @@ fn read_readiness(
             mpsc::RecvTimeoutError::Disconnected => SupervisorError::InvalidReadiness,
         })?
         .map_err(|_| SupervisorError::InvalidReadiness)?;
-    let endpoint = parse_readiness(&first).ok_or(SupervisorError::InvalidReadiness)?;
-    match receiver.recv_timeout(EXTRA_READINESS_WINDOW) {
-        Ok(_) => Ok(Err(SupervisorError::InvalidReadiness)),
-        Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => {
-            Ok(Ok(endpoint))
-        }
-    }
+    parse_readiness(&first).ok_or(SupervisorError::InvalidReadiness)
 }
 
 fn parse_readiness(line: &str) -> Option<SidecarEndpoint> {
@@ -383,17 +397,14 @@ mod tests {
         assert_eq!(endpoint.token().expose(), "abc123");
         supervisor.shutdown().unwrap();
 
-        for script in [
+        let supervisor = SidecarSupervisor::with_command(shell(
             "printf 'ready port=43123 token=abc123\\n'; cat >/dev/null",
-            "printf 'SIDECAR_READY port=43123 token=abc123\\nSIDECAR_READY port=43124 token=def456\\n'; cat >/dev/null",
-        ] {
-            let supervisor = SidecarSupervisor::with_command(shell(script));
-            let error = match supervisor.spawn(config("provider-secret")) {
-                Ok(_) => panic!("malformed readiness output must be rejected"),
-                Err(error) => error,
-            };
-            assert!(matches!(error, SupervisorError::InvalidReadiness));
-        }
+        ));
+        let error = match supervisor.spawn(config("provider-secret")) {
+            Ok(_) => panic!("malformed readiness output must be rejected"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, SupervisorError::InvalidReadiness));
     }
 
     #[test]
@@ -433,6 +444,19 @@ mod tests {
 
         assert_eq!(endpoint.port(), 43123);
         supervisor.shutdown().unwrap();
+    }
+
+    #[test]
+    fn delayed_second_readiness_line_invalidates_and_cleans_up_the_session() {
+        let supervisor = SidecarSupervisor::with_command(shell(
+            "printf 'SIDECAR_READY port=43123 token=abc123\\n'; sleep 0.1; printf 'SIDECAR_READY port=43124 token=def456\\n'; sleep 30",
+        ));
+        supervisor.spawn(config("provider-secret")).unwrap();
+
+        std::thread::sleep(Duration::from_millis(150));
+
+        assert!(supervisor.endpoint().is_none());
+        assert!(supervisor.child_has_exited());
     }
 
     #[test]
