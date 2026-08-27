@@ -1,7 +1,29 @@
 .worktrees/
+
+# Rust/Tauri build output
+target/
+**/target/
+
+# Python environments and caches
 .superpowers/
 .venv/
 __pycache__/
+*.py[cod]
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
+
+# Local app state and media
+*.db
+*.db-wal
+*.db-shm
+recordings/
+
+# Codex/Superpowers working artifacts
+.codex/
+docs/superpowers/
+
+# OS/editor noise
+.DS_Store
+.idea/
+.vscode/
