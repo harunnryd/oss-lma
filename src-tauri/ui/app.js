@@ -35,6 +35,13 @@
     $('#stop').disabled = !active;
     if (snapshot.error) setMessage(recoveryMessage(snapshot.error));
   };
+  const removeTranscript = envelope => {
+    if (envelope.EventType !== 'DELETE_TRANSCRIPT_SEGMENT' || !envelope.SegmentId) return false;
+    const row = transcript.querySelector(`[data-segment-id="${CSS.escape(envelope.SegmentId)}"]`);
+    if (!row) return false;
+    row.remove();
+    return true;
+  };
   const updateTranscript = envelope => {
     if (envelope.EventType !== 'ADD_TRANSCRIPT_SEGMENT' || !envelope.SegmentId) return false;
     let row = transcript.querySelector(`[data-segment-id="${CSS.escape(envelope.SegmentId)}"]`);
@@ -87,9 +94,10 @@
     listen('capture-status', ({ payload }) => updateControls(payload));
     listen('meeting-event', ({ payload }) => {
       if (payload.EventType === 'ADD_TRANSCRIPT_SEGMENT') updateTranscript(payload);
+      if (payload.EventType === 'DELETE_TRANSCRIPT_SEGMENT') removeTranscript(payload);
       if (payload.EventType === 'ERROR') setMessage(recoveryMessage(payload.Code));
     });
   }
-  window.ossLma = { updateTranscript, recoveryMessage };
+  window.ossLma = { updateTranscript, removeTranscript, recoveryMessage };
   refresh();
 })();
