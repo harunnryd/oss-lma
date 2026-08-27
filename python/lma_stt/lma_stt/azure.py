@@ -254,6 +254,8 @@ class AzureEngine:
                     )
                 except Exception as exc:
                     raise _connection_error(exc) from exc
+                stream = AzureResultStream(conn, channel, ctx["sample_rate"], clock=self.clock)
+                streams.append(stream)
                 status = conn.response.status_code
                 if status in (401, 403):
                     raise ProviderAuthError(f"handshake rejected with HTTP {status}")
@@ -262,9 +264,6 @@ class AzureEngine:
                 await conn.send(
                     "Path: speech.config\r\nContent-Type: application/json\r\n\r\n"
                     + json.dumps(config_frame)
-                )
-                streams.append(
-                    AzureResultStream(conn, channel, ctx["sample_rate"], clock=self.clock)
                 )
         except Exception:
             await asyncio.gather(*(stream.close() for stream in streams))
