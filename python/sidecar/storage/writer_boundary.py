@@ -94,3 +94,7 @@ def normalize_thinking_step(ev: dict) -> tuple:
         ev["StepType"],
         ev.get("Content"),
     )
+
+
+def normalize_deleted_segment(ev: dict) -> tuple:
+    return (ev["CallId"], ev["SegmentId"])

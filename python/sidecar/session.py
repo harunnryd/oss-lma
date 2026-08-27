@@ -21,11 +21,13 @@ from sidecar.frames import (
     SpeakerChange,
     Start,
     VpCommand,
+    delete_segment_frame,
     error_frame,
     parse_frame,
     serialize_event,
 )
 from sidecar.reconnect import ReconnectState, load_reconnect_policy
+from sidecar.storage.crash_recovery import PendingDeletes
 from sidecar.storage.persistence import PersistenceWriter
 from sidecar.storage.recording import RecordingSink, WavRecordingSink
 
@@ -45,12 +47,14 @@ class Session:
         recorder: RecordingSink | None = None,
         record_meeting: bool = False,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        pending_deletes: PendingDeletes | None = None,
     ) -> None:
         self.connection = connection
         self.engine_factory = engine_factory
         self.db = db
         self.recorder = recorder
         self.record_meeting = record_meeting
+        self.pending_deletes = pending_deletes
         self.call_id = ""
         self.stream = None
         self.assembler = None
@@ -161,6 +165,7 @@ class Session:
         self.paused = False
         self._reconnecting = False
         self._last_ctx = ctx
+        await self._emit_pending_deletes()
         engine = self.engine_factory(ctx)
         self.stream = await engine.start(ctx)
         self._stream_started_at_ms = self._now_ms()
@@ -184,6 +189,33 @@ class Session:
             stored_offset = self.db.write_meeting_started(ev, return_offset=True) or 0
             resumed_offset = self.db.read_max_segment_end_ms(frame.call_id) or 0
             self.time_offset_ms = max(stored_offset, resumed_offset)
+
+    async def _emit_pending_deletes(self) -> None:
+        """Drain the pending-deletes buffer for this session's call_id.
+
+        Emits a DELETE_TRANSCRIPT_SEGMENT frame for every stale partial
+        recorded against this meeting before the supervisor respawned.
+        Persists the deletion via the same write path used for live
+        segments. Callers that re-record under a different segment_id
+        are unaffected because their writes target a fresh row, not the
+        row whose DELETE event we just emitted.
+
+        Fired from `_start_session` AFTER the new `CallId` is recorded
+        on `self.call_id` so the persisted DELETE always points at the
+        meeting the user is about to resume. The matching START event
+        follows in the same call, so any client that observes the
+        DELETE before the START still sees the meeting row on its next
+        fetch — the DELETE only removes the orphan partial, not the
+        meeting itself.
+        """
+        if self.pending_deletes is None:
+            return
+        pairs = self.pending_deletes.consume(self.call_id)
+        for _call_id, segment_id in pairs:
+            frame = delete_segment_frame(self.call_id, segment_id)
+            if self.db is not None:
+                self.db.write(frame)
+            await self._send(frame)
 
     async def _close_session(self, drain: bool) -> None:
         if self.stream is None:

@@ -4,6 +4,7 @@ import time
 from sidecar.storage.writer_boundary import (
     normalize_agent_assist,
     normalize_agent_token,
+    normalize_deleted_segment,
     normalize_meeting_ended,
     normalize_meeting_started,
     normalize_segment,
@@ -110,8 +111,7 @@ def write_thinking_step(conn: sqlite3.Connection, ev: dict) -> None:
 def write_meeting_failed(conn: sqlite3.Connection, ev: dict) -> None:
     ended_at = int(time.time() * 1000)
     conn.execute(
-        "UPDATE meetings SET status = 'FAILED', ended_at = ?, last_reconnect_at = ? "
-        "WHERE id = ?",
+        "UPDATE meetings SET status = 'FAILED', ended_at = ?, last_reconnect_at = ? WHERE id = ?",
         (ended_at, ended_at, ev["CallId"]),
     )
     conn.commit()
@@ -138,6 +138,22 @@ def write_meeting_started_update_offset(
     conn.commit()
 
 
+def write_deleted_segment(conn: sqlite3.Connection, ev: dict) -> None:
+    """Mark stale partial segments deleted after sidecar restart.
+
+    After sweep_stale_partials runs at startup, the segments have
+    is_partial = -1. We additionally remove any cached partial rows
+    for this SegmentId from this meeting so future reconciliations
+    start from a clean state.
+    """
+    call_id, segment_id = normalize_deleted_segment(ev)
+    conn.execute(
+        "DELETE FROM segments WHERE meeting_id = ? AND segment_id = ?",
+        (call_id, segment_id),
+    )
+    conn.commit()
+
+
 def dispatch_write(conn: sqlite3.Connection, ev: dict, *, time_offset_ms: int = 0) -> None:
     event_type = ev.get("EventType")
     if event_type == "START":
@@ -154,5 +170,7 @@ def dispatch_write(conn: sqlite3.Connection, ev: dict, *, time_offset_ms: int = 
         write_agent_token(conn, ev)
     elif event_type == "THINKING_STEP":
         write_thinking_step(conn, ev)
+    elif event_type == "DELETE_TRANSCRIPT_SEGMENT":
+        write_deleted_segment(conn, ev)
     else:
         raise ValueError(f"unhandled event type for persistence: {event_type!r}")

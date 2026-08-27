@@ -7,196 +7,576 @@
     "Timestamps on the wire are float seconds from stream start; SQLite stores integer milliseconds."
   ],
   "$defs": {
-    "Uuid": { "type": "string", "format": "uuid" },
-    "Channel": { "enum": ["CALLER", "AGENT", "AGENT_ASSISTANT"] },
+    "Uuid": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "Channel": {
+      "enum": [
+        "CALLER",
+        "AGENT",
+        "AGENT_ASSISTANT"
+      ]
+    },
     "Envelope": {
       "type": "object",
-      "required": ["EventType"],
+      "required": [
+        "EventType"
+      ],
       "properties": {
-        "EventType": { "type": "string" },
-        "CallId": { "$ref": "#/$defs/Uuid" },
-        "CreatedAt": { "type": "string", "format": "date-time" },
-        "UpdatedAt": { "type": "string", "format": "date-time" }
+        "EventType": {
+          "type": "string"
+        },
+        "CallId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "CreatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "UpdatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
       }
     },
     "Start": {
-      "allOf": [{ "$ref": "#/$defs/Envelope" }],
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        }
+      ],
       "properties": {
-        "EventType": { "const": "START" },
-        "SamplingRate": { "type": "integer", "minimum": 8000 },
-        "DiarizeSystemChannel": { "type": "boolean", "default": false },
-        "DiarizeMicChannel": { "type": "boolean", "default": false }
+        "EventType": {
+          "const": "START"
+        },
+        "SamplingRate": {
+          "type": "integer",
+          "minimum": 8000
+        },
+        "DiarizeSystemChannel": {
+          "type": "boolean",
+          "default": false
+        },
+        "DiarizeMicChannel": {
+          "type": "boolean",
+          "default": false
+        }
       },
-      "required": ["EventType", "CallId", "SamplingRate"]
+      "required": [
+        "EventType",
+        "CallId",
+        "SamplingRate"
+      ]
     },
     "SpeakerChange": {
-      "allOf": [{ "$ref": "#/$defs/Envelope" }],
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        }
+      ],
       "properties": {
-        "EventType": { "const": "SPEAKER_CHANGE" },
-        "Channel": { "enum": ["CALLER", "AGENT"] },
-        "ActiveSpeaker": { "type": "string" }
+        "EventType": {
+          "const": "SPEAKER_CHANGE"
+        },
+        "Channel": {
+          "enum": [
+            "CALLER",
+            "AGENT"
+          ]
+        },
+        "ActiveSpeaker": {
+          "type": "string"
+        }
       },
-      "required": ["EventType", "CallId", "Channel", "ActiveSpeaker"]
+      "required": [
+        "EventType",
+        "CallId",
+        "Channel",
+        "ActiveSpeaker"
+      ]
     },
     "Pause": {
-      "allOf": [{ "$ref": "#/$defs/Envelope" }],
-      "properties": { "EventType": { "const": "PAUSE" } },
-      "required": ["EventType", "CallId"]
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        }
+      ],
+      "properties": {
+        "EventType": {
+          "const": "PAUSE"
+        }
+      },
+      "required": [
+        "EventType",
+        "CallId"
+      ]
     },
     "Resume": {
-      "allOf": [{ "$ref": "#/$defs/Envelope" }],
-      "properties": { "EventType": { "const": "RESUME" } },
-      "required": ["EventType", "CallId"]
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        }
+      ],
+      "properties": {
+        "EventType": {
+          "const": "RESUME"
+        }
+      },
+      "required": [
+        "EventType",
+        "CallId"
+      ]
     },
     "End": {
-      "allOf": [{ "$ref": "#/$defs/Envelope" }],
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        }
+      ],
       "properties": {
-        "EventType": { "const": "END" }
+        "EventType": {
+          "const": "END"
+        }
       },
-      "required": ["EventType", "CallId"]
+      "required": [
+        "EventType",
+        "CallId"
+      ]
     },
     "VpCommand": {
-      "allOf": [{ "$ref": "#/$defs/Envelope" }],
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        }
+      ],
       "properties": {
-        "EventType": { "const": "VP_COMMAND" },
-        "TaskId": { "type": "string" },
-        "Command": {
-          "enum": ["CLICK", "TYPE", "CHAT", "RESET_SELECTORS", "END", "PAUSE", "RESUME"],
+        "EventType": {
+          "const": "VP_COMMAND"
+        },
+        "TaskId": {
           "type": "string"
         },
-        "Payload": { "type": "object",
-          "description": "Command-specific keys; CLICK/TYPE use x/y coordinates or text." }
+        "Command": {
+          "enum": [
+            "CLICK",
+            "TYPE",
+            "CHAT",
+            "RESET_SELECTORS",
+            "END",
+            "PAUSE",
+            "RESUME"
+          ],
+          "type": "string"
+        },
+        "Payload": {
+          "type": "object",
+          "description": "Command-specific keys; CLICK/TYPE use x/y coordinates or text."
+        }
       },
-      "required": ["EventType", "TaskId", "Command"]
+      "required": [
+        "EventType",
+        "TaskId",
+        "Command"
+      ]
     },
     "AgentQuery": {
-      "allOf": [{ "$ref": "#/$defs/Envelope" }],
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        }
+      ],
       "properties": {
-        "EventType": { "const": "AGENT_QUERY" },
-        "QueryId": { "$ref": "#/$defs/Uuid" },
-        "Message": { "type": "string" },
+        "EventType": {
+          "const": "AGENT_QUERY"
+        },
+        "QueryId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "Message": {
+          "type": "string"
+        },
         "History": {
           "type": "array",
           "maxItems": 10,
           "items": {
             "type": "object",
             "properties": {
-              "Role": { "enum": ["user", "assistant"] },
-              "Content": { "type": "string" }
+              "Role": {
+                "enum": [
+                  "user",
+                  "assistant"
+                ]
+              },
+              "Content": {
+                "type": "string"
+              }
             },
-            "required": ["Role", "Content"]
+            "required": [
+              "Role",
+              "Content"
+            ]
           }
         }
       },
-      "required": ["EventType", "CallId", "QueryId", "Message"]
+      "required": [
+        "EventType",
+        "CallId",
+        "QueryId",
+        "Message"
+      ]
     },
     "AddTranscriptSegment": {
-      "allOf": [{ "$ref": "#/$defs/Envelope" }],
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        }
+      ],
       "properties": {
-        "EventType": { "const": "ADD_TRANSCRIPT_SEGMENT" },
-        "SegmentId": { "type": "string" },
-        "Channel": { "$ref": "#/$defs/Channel" },
-        "Speaker": { "type": "string" },
-        "StartTime": { "type": "number", "description": "seconds from stream start" },
-        "EndTime": { "type": "number" },
-        "Transcript": { "type": "string" },
-        "IsPartial": { "type": "boolean" },
-        "SentimentScore": { "type": ["number", "null"] }
+        "EventType": {
+          "const": "ADD_TRANSCRIPT_SEGMENT"
+        },
+        "SegmentId": {
+          "type": "string"
+        },
+        "Channel": {
+          "$ref": "#/$defs/Channel"
+        },
+        "Speaker": {
+          "type": "string"
+        },
+        "StartTime": {
+          "type": "number",
+          "description": "seconds from stream start"
+        },
+        "EndTime": {
+          "type": "number"
+        },
+        "Transcript": {
+          "type": "string"
+        },
+        "IsPartial": {
+          "type": "boolean"
+        },
+        "SentimentScore": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
       },
-      "required": ["EventType", "CallId", "SegmentId", "Channel", "StartTime", "EndTime", "Transcript", "IsPartial"]
+      "required": [
+        "EventType",
+        "CallId",
+        "SegmentId",
+        "Channel",
+        "StartTime",
+        "EndTime",
+        "Transcript",
+        "IsPartial"
+      ]
     },
     "AddSummary": {
-      "allOf": [{ "$ref": "#/$defs/Envelope" }],
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        }
+      ],
       "properties": {
-        "EventType": { "const": "ADD_SUMMARY" },
-        "Section": { "type": "string" },
-        "SummaryText": { "type": "string" }
+        "EventType": {
+          "const": "ADD_SUMMARY"
+        },
+        "Section": {
+          "type": "string"
+        },
+        "SummaryText": {
+          "type": "string"
+        }
       },
-      "required": ["EventType", "CallId", "Section", "SummaryText"]
+      "required": [
+        "EventType",
+        "CallId",
+        "Section",
+        "SummaryText"
+      ]
     },
     "AddAgentAssist": {
-      "allOf": [{ "$ref": "#/$defs/Envelope" }],
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        }
+      ],
       "properties": {
-        "EventType": { "const": "ADD_AGENT_ASSIST" },
-        "SegmentId": { "type": "string" },
-        "TriggerSegmentId": { "type": "string" },
-        "Transcript": { "type": "string" },
-        "IsPartial": { "type": "boolean" }
+        "EventType": {
+          "const": "ADD_AGENT_ASSIST"
+        },
+        "SegmentId": {
+          "type": "string"
+        },
+        "TriggerSegmentId": {
+          "type": "string"
+        },
+        "Transcript": {
+          "type": "string"
+        },
+        "IsPartial": {
+          "type": "boolean"
+        }
       },
-      "required": ["EventType", "CallId", "SegmentId", "Transcript", "IsPartial"]
+      "required": [
+        "EventType",
+        "CallId",
+        "SegmentId",
+        "Transcript",
+        "IsPartial"
+      ]
     },
     "AgentToken": {
-      "allOf": [{ "$ref": "#/$defs/Envelope" }],
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        }
+      ],
       "properties": {
-        "EventType": { "const": "AGENT_TOKEN" },
-        "QueryId": { "$ref": "#/$defs/Uuid" },
-        "Seq": { "type": "integer", "minimum": 0 },
-        "Delta": { "type": "string" }
+        "EventType": {
+          "const": "AGENT_TOKEN"
+        },
+        "QueryId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "Seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "Delta": {
+          "type": "string"
+        }
       },
-      "required": ["EventType", "CallId", "QueryId", "Seq", "Delta"]
+      "required": [
+        "EventType",
+        "CallId",
+        "QueryId",
+        "Seq",
+        "Delta"
+      ]
     },
     "ThinkingStep": {
-      "allOf": [{ "$ref": "#/$defs/Envelope" }],
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        }
+      ],
       "properties": {
-        "EventType": { "const": "THINKING_STEP" },
-        "QueryId": { "$ref": "#/$defs/Uuid" },
-        "Seq": { "type": "integer" },
-        "StepType": { "enum": ["reasoning", "tool_use", "tool_result", "status"] },
-        "Content": { "type": "string" },
-        "ToolName": { "type": ["string", "null"] },
-        "ToolInput": { "type": ["object", "null"] },
-        "ToolResult": { "type": ["object", "null"] },
-        "Success": { "type": ["boolean", "null"] }
+        "EventType": {
+          "const": "THINKING_STEP"
+        },
+        "QueryId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "Seq": {
+          "type": "integer"
+        },
+        "StepType": {
+          "enum": [
+            "reasoning",
+            "tool_use",
+            "tool_result",
+            "status"
+          ]
+        },
+        "Content": {
+          "type": "string"
+        },
+        "ToolName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ToolInput": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "ToolResult": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "Success": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
       },
-      "required": ["EventType", "CallId", "Seq", "StepType"]
+      "required": [
+        "EventType",
+        "CallId",
+        "Seq",
+        "StepType"
+      ]
     },
     "VpStatus": {
-      "allOf": [{ "$ref": "#/$defs/Envelope" }],
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        }
+      ],
       "properties": {
-        "EventType": { "const": "VP_STATUS" },
-        "TaskId": { "type": "string" },
-        "State": {
-          "enum": ["PENDING", "LAUNCHING", "JOINING", "IN_MEETING",
-                   "AWAITING_ACTION", "FINALIZING", "DONE", "FAILED"]
+        "EventType": {
+          "const": "VP_STATUS"
         },
-        "Detail": { "type": "string" }
+        "TaskId": {
+          "type": "string"
+        },
+        "State": {
+          "enum": [
+            "PENDING",
+            "LAUNCHING",
+            "JOINING",
+            "IN_MEETING",
+            "AWAITING_ACTION",
+            "FINALIZING",
+            "DONE",
+            "FAILED"
+          ]
+        },
+        "Detail": {
+          "type": "string"
+        }
       },
-      "required": ["EventType", "TaskId", "State"]
+      "required": [
+        "EventType",
+        "TaskId",
+        "State"
+      ]
     },
     "VpScreenshot": {
-      "allOf": [{ "$ref": "#/$defs/Envelope" }],
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        }
+      ],
       "properties": {
-        "EventType": { "const": "VP_SCREENSHOT" },
-        "TaskId": { "type": "string" },
-        "ImageBase64": { "type": "string", "contentEncoding": "base64" }
+        "EventType": {
+          "const": "VP_SCREENSHOT"
+        },
+        "TaskId": {
+          "type": "string"
+        },
+        "ImageBase64": {
+          "type": "string",
+          "contentEncoding": "base64"
+        }
       },
-      "required": ["EventType", "TaskId", "ImageBase64"]
+      "required": [
+        "EventType",
+        "TaskId",
+        "ImageBase64"
+      ]
     },
     "Error": {
-      "allOf": [{ "$ref": "#/$defs/Envelope" }],
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        }
+      ],
       "properties": {
-        "EventType": { "const": "ERROR" },
-        "Code": { "$ref": "errors.yaml" },
-        "Context": { "type": "object" }
+        "EventType": {
+          "const": "ERROR"
+        },
+        "Code": {
+          "$ref": "errors.yaml"
+        },
+        "Context": {
+          "type": "object"
+        }
       },
-      "required": ["EventType", "CallId", "Code"]
+      "required": [
+        "EventType",
+        "CallId",
+        "Code"
+      ]
+    },
+    "DeleteTranscriptSegment": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/Envelope"
+        }
+      ],
+      "properties": {
+        "EventType": {
+          "const": "DELETE_TRANSCRIPT_SEGMENT"
+        },
+        "SegmentId": {
+          "type": "string"
+        },
+        "Reason": {
+          "enum": [
+            "STALE_PARTIAL",
+            "MANUAL"
+          ],
+          "default": "STALE_PARTIAL"
+        }
+      },
+      "required": [
+        "EventType",
+        "CallId",
+        "SegmentId"
+      ]
     }
   },
   "oneOf": [
-    { "$ref": "#/$defs/Start" },
-    { "$ref": "#/$defs/SpeakerChange" },
-    { "$ref": "#/$defs/Pause" },
-    { "$ref": "#/$defs/Resume" },
-    { "$ref": "#/$defs/End" },
-    { "$ref": "#/$defs/VpCommand" },
-    { "$ref": "#/$defs/AgentQuery" },
-    { "$ref": "#/$defs/AddTranscriptSegment" },
-    { "$ref": "#/$defs/AddSummary" },
-    { "$ref": "#/$defs/AddAgentAssist" },
-    { "$ref": "#/$defs/AgentToken" },
-    { "$ref": "#/$defs/ThinkingStep" },
-    { "$ref": "#/$defs/VpStatus" },
-    { "$ref": "#/$defs/VpScreenshot" },
-    { "$ref": "#/$defs/Error" }
+    {
+      "$ref": "#/$defs/Start"
+    },
+    {
+      "$ref": "#/$defs/SpeakerChange"
+    },
+    {
+      "$ref": "#/$defs/Pause"
+    },
+    {
+      "$ref": "#/$defs/Resume"
+    },
+    {
+      "$ref": "#/$defs/End"
+    },
+    {
+      "$ref": "#/$defs/VpCommand"
+    },
+    {
+      "$ref": "#/$defs/AgentQuery"
+    },
+    {
+      "$ref": "#/$defs/AddTranscriptSegment"
+    },
+    {
+      "$ref": "#/$defs/DeleteTranscriptSegment"
+    },
+    {
+      "$ref": "#/$defs/AddSummary"
+    },
+    {
+      "$ref": "#/$defs/AddAgentAssist"
+    },
+    {
+      "$ref": "#/$defs/AgentToken"
+    },
+    {
+      "$ref": "#/$defs/ThinkingStep"
+    },
+    {
+      "$ref": "#/$defs/VpStatus"
+    },
+    {
+      "$ref": "#/$defs/VpScreenshot"
+    },
+    {
+      "$ref": "#/$defs/Error"
+    }
   ]
 }

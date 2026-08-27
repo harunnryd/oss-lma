@@ -12,6 +12,7 @@ from websockets.asyncio.server import ServerConnection, serve
 from websockets.http11 import Request, Response
 
 from sidecar.session import Session
+from sidecar.storage.crash_recovery import PendingDeletes
 from sidecar.storage.persistence import PersistenceWriter
 
 MAX_BIND_ATTEMPTS = 10
@@ -48,6 +49,7 @@ def _handler(
     sessions: set,
     db_writer: PersistenceWriter | None,
     record_meeting: bool = False,
+    pending_deletes: "PendingDeletes | None" = None,
 ) -> Callable[[ServerConnection], object]:
     async def handle(connection: ServerConnection) -> None:
         session = Session(
@@ -55,6 +57,7 @@ def _handler(
             engine_factory,
             db=db_writer,
             record_meeting=record_meeting,
+            pending_deletes=pending_deletes,
         )
         sessions.add(session)
         try:
@@ -72,6 +75,7 @@ async def run_server(
     *,
     db_writer: PersistenceWriter | None = None,
     record_meeting: bool = False,
+    pending_deletes: PendingDeletes | None = None,
 ) -> tuple[int, str]:
     sink = ready_sink if ready_sink is not None else sys.stdout
     token = secrets.token_hex(16)
@@ -81,7 +85,7 @@ async def run_server(
     for attempt in range(MAX_BIND_ATTEMPTS):
         try:
             server = await serve(
-                _handler(engine_factory, sessions, db_writer, record_meeting),
+                _handler(engine_factory, sessions, db_writer, record_meeting, pending_deletes),
                 host="127.0.0.1",
                 port=port,
                 process_request=_gate(token),

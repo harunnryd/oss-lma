@@ -24,7 +24,8 @@ def test_sweep_marks_stale_partials(tmp_path):
     )
     conn.commit()
     marked = sweep_stale_partials(conn)
-    assert marked == 1
+    assert len(marked) == 1
+    assert marked[0] == ("m-1", "r1")
     row = conn.execute("SELECT is_partial FROM segments WHERE segment_id = 'r1'").fetchone()
     assert row["is_partial"] == -1
 
@@ -42,7 +43,7 @@ def test_sweep_ignores_completed_meetings(tmp_path):
     )
     conn.commit()
     marked = sweep_stale_partials(conn)
-    assert marked == 0
+    assert marked == []
     row = conn.execute("SELECT is_partial FROM segments WHERE segment_id = 'r1'").fetchone()
     assert row["is_partial"] == 1
 
@@ -60,9 +61,9 @@ def test_sweep_ignores_final_segments(tmp_path):
     )
     conn.commit()
     marked = sweep_stale_partials(conn)
-    assert marked == 0
+    assert marked == []
 
 
 def test_sweep_returns_zero_when_nothing_to_mark(tmp_path):
     conn = _bootstrap(tmp_path)
-    assert sweep_stale_partials(conn) == 0
+    assert sweep_stale_partials(conn) == []
