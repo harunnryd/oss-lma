@@ -70,11 +70,16 @@ pub struct CaptureDeviceSelection {
     pub microphone_id: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct LinkOptions {
     pub port: u16,
     pub token: String,
+    pub diarize_microphone: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartMeetingOptions {
     #[serde(default)]
     pub diarize_microphone: bool,
 }
@@ -326,6 +331,19 @@ impl AppCapture {
                 Err(self.startup_error(generation).unwrap_or(error))
             }
         }
+    }
+
+    fn start_from_webview(&self, options: StartMeetingOptions) -> Result<CaptureSnapshot, String> {
+        let endpoint = self
+            .sidecar
+            .as_ref()
+            .and_then(|sidecar| sidecar.endpoint())
+            .ok_or_else(|| "sidecar is unavailable".to_owned())?;
+        self.start(LinkOptions {
+            port: endpoint.port(),
+            token: endpoint.token().expose().to_owned(),
+            diarize_microphone: options.diarize_microphone,
+        })
     }
 
     pub fn pause(&self) -> Result<CaptureSnapshot, String> {
@@ -1164,10 +1182,10 @@ pub fn set_capture_devices(
 
 #[tauri::command(async)]
 pub fn start_meeting(
-    options: LinkOptions,
+    options: StartMeetingOptions,
     state: tauri::State<'_, AppCapture>,
 ) -> Result<CaptureSnapshot, String> {
-    state.start(options)
+    state.start_from_webview(options)
 }
 
 #[tauri::command(async)]
