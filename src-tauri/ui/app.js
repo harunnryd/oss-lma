@@ -15,8 +15,15 @@
     CAPTURE_PERMISSION_DENIED: 'Grant microphone and screen recording access, then try again.',
     CAPTURE_DEVICE_LOST: 'Reconnect the missing audio device, then start a new meeting.',
     STT_PROVIDER_AUTH: 'Check the provider API key in Transcription provider.',
+    STT_STREAM_RESET: 'The transcription stream reset. It will reconnect automatically.',
     SIDECAR_UNAVAILABLE: 'The transcription service is unavailable. Save provider settings and try again.',
     LINK_DISCONNECTED: 'The transcription connection dropped. Stop and start a new meeting.',
+    VP_CONTAINER_FAILED: 'The virtual participant failed. Restart the participant and try again.',
+    VP_MANUAL_ACTION_REQUIRED: 'The virtual participant needs your attention. Open its takeover controls.',
+    AGENT_TOOL_FAILURE: 'An assistant action failed. The meeting can continue.',
+    RAG_EMBEDDING_UNAVAILABLE: 'Knowledge indexing is unavailable. Try the import again later.',
+    DB_WRITE_CONFLICT: 'Saving conflicted with another update. Try again.',
+    PORT_BIND_FAILED: 'The transcription service could not claim a port. Try again.',
   }[error] || error);
   const updateControls = snapshot => {
     const current = snapshot.phase;
@@ -80,6 +87,6 @@
     listen('capture-status', ({ payload }) => updateControls(payload));
     listen('meeting-event', ({ payload }) => updateTranscript(payload));
   }
-  window.ossLma = { updateTranscript };
+  window.ossLma = { updateTranscript, recoveryMessage };
   refresh();
 })();
