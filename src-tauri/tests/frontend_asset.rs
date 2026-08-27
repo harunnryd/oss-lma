@@ -53,11 +53,11 @@ fn frontend_contains_provider_settings_and_live_transcript_surfaces() {
 
     for forbidden_detail in ["port: 8765", "token:", "endpoint"] {
         assert!(
-            index.contains(forbidden_detail) == false,
+            !index.contains(forbidden_detail),
             "contains {forbidden_detail}"
         );
         assert!(
-            app.contains(forbidden_detail) == false,
+            !app.contains(forbidden_detail),
             "contains {forbidden_detail}"
         );
     }
@@ -81,6 +81,9 @@ eval(fs.readFileSync(process.argv[1], 'utf8'));
 if (!window.ossLma.updateTranscript({ EventType: 'ADD_TRANSCRIPT_SEGMENT', SegmentId: 's1', Transcript: 'partial', IsPartial: true })) process.exit(1);
 if (!window.ossLma.updateTranscript({ EventType: 'ADD_TRANSCRIPT_SEGMENT', SegmentId: 's1', Transcript: 'final', IsPartial: false })) process.exit(1);
 if (rows.length !== 1 || rows[0].textContent !== 'final') process.exit(1);
+const codes = ['STT_PROVIDER_AUTH', 'STT_STREAM_RESET', 'LINK_DISCONNECTED', 'CAPTURE_DEVICE_LOST', 'CAPTURE_PERMISSION_DENIED', 'VP_CONTAINER_FAILED', 'VP_MANUAL_ACTION_REQUIRED', 'AGENT_TOOL_FAILURE', 'RAG_EMBEDDING_UNAVAILABLE', 'DB_WRITE_CONFLICT', 'SIDECAR_UNAVAILABLE', 'PORT_BIND_FAILED'];
+if (codes.some(code => window.ossLma.recoveryMessage(code) === code)) process.exit(1);
+if (window.ossLma.recoveryMessage('UNKNOWN_CODE') !== 'UNKNOWN_CODE') process.exit(1);
 "#;
     let output = Command::new("node")
         .arg("-e")

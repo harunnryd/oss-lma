@@ -465,7 +465,7 @@ fn permission_preflight_and_source_readiness_block_meeting_resources() {
                 system: true,
                 microphone: true,
             },
-            "capture permissions are not granted",
+            "CAPTURE_PERMISSION_DENIED",
             vec!["permissions"],
         ),
         (

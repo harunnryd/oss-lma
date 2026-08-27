@@ -98,6 +98,29 @@ pub fn parse_error(raw: &str) -> Option<(String, ErrorCode, Value)> {
     }
 }
 
+pub fn parse_meeting_event(raw: &str) -> Option<Value> {
+    let event: Value = serde_json::from_str(raw).ok()?;
+    let object = event.as_object()?;
+    (object.get("EventType")?.as_str()? == "ADD_TRANSCRIPT_SEGMENT").then_some(())?;
+    for field in ["CallId", "SegmentId", "Channel", "Transcript"] {
+        object.get(field)?.as_str()?;
+    }
+    for field in ["StartTime", "EndTime"] {
+        object.get(field)?.as_f64()?;
+    }
+    object.get("IsPartial")?.as_bool()?;
+    Some(event)
+}
+
+#[cfg(test)]
+#[test]
+fn parses_a_transcript_envelope_without_losing_pascal_case_fields() {
+    let raw = r#"{"EventType":"ADD_TRANSCRIPT_SEGMENT","CallId":"call-1","SegmentId":"s1","Channel":"CALLER","StartTime":0.0,"EndTime":1.0,"Transcript":"partial","IsPartial":true}"#;
+    let event = parse_meeting_event(raw).expect("transcript envelope is accepted");
+    assert_eq!(event["SegmentId"], "s1");
+    assert_eq!(event["IsPartial"], true);
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::Value;

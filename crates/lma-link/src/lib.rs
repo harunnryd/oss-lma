@@ -73,6 +73,7 @@ pub enum LinkEvent {
     Connected,
     Disconnected,
     BufferDropped,
+    MeetingEvent(serde_json::Value),
     Error {
         call_id: String,
         code: ErrorCode,

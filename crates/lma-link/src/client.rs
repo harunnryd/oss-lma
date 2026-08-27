@@ -267,6 +267,9 @@ async fn run(
                         if socket.send(Message::Pong(payload)).await.is_err() { break; }
                     }
                     Some(Ok(Message::Text(text))) => {
+                        if let Some(event) = crate::protocol::parse_meeting_event(&text) {
+                            let _ = events.send(crate::LinkEvent::MeetingEvent(event));
+                        }
                         if let Some((call_id, code, context)) = crate::protocol::parse_error(&text) {
                             let _ = events.send(crate::LinkEvent::Error { call_id, code, context });
                         }

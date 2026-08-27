@@ -174,6 +174,10 @@ impl AppCapture {
         let emit_levels: LevelEmitter = Arc::new(move |levels| {
             let _ = level_app.emit(CAPTURE_LEVELS_EVENT, levels);
         });
+        let meeting_app = app.clone();
+        let emit_meeting: MeetingEmitter = Arc::new(move |event| {
+            let _ = meeting_app.emit("meeting-event", event);
+        });
         let failed_state = state.clone();
         let failed_emitter = emit_snapshot.clone();
         let emit_failure: FailureEmitter = Arc::new(move |generation, error| {
@@ -188,7 +192,7 @@ impl AppCapture {
             }
         });
 
-        let backend = NativeCaptureBackend::new(emit_levels, emit_failure)?;
+        let backend = NativeCaptureBackend::new(emit_levels, emit_failure, emit_meeting)?;
         Ok(Self {
             app_data_dir,
             backend: Arc::new(Mutex::new(Box::new(backend))),
@@ -273,7 +277,7 @@ impl AppCapture {
             Err(error) => return self.fail(error),
         };
         if permissions.has_denial() {
-            return self.fail("capture permissions are not granted");
+            return self.fail(lma_link::ErrorCode::CapturePermissionDenied.as_str());
         }
 
         self.update_state(|state| state.begin_starting())?;
@@ -551,6 +555,30 @@ fn fail_watched_session(
 
 type LevelEmitter = Arc<dyn Fn(LevelMeters) + Send + Sync>;
 type FailureEmitter = Arc<dyn Fn(u64, String) + Send + Sync>;
+type MeetingEmitter = Arc<dyn Fn(serde_json::Value) + Send + Sync>;
+
+fn bridge_link_event(
+    event: lma_link::LinkEvent,
+    emit: &MeetingEmitter,
+) -> Option<lma_link::ErrorCode> {
+    match event {
+        lma_link::LinkEvent::MeetingEvent(envelope) => {
+            emit(envelope);
+            None
+        }
+        lma_link::LinkEvent::Error {
+            call_id,
+            code,
+            context,
+        } => {
+            emit(
+                serde_json::json!({"EventType":"ERROR", "CallId":call_id, "Code":code.as_str(), "Context":context}),
+            );
+            Some(code)
+        }
+        _ => None,
+    }
+}
 
 #[cfg(target_os = "macos")]
 struct NativeCaptureBackend {
@@ -587,12 +615,18 @@ enum NativeCommand {
 
 #[cfg(target_os = "macos")]
 impl NativeCaptureBackend {
-    fn new(emit_levels: LevelEmitter, emit_failure: FailureEmitter) -> Result<Self, String> {
+    fn new(
+        emit_levels: LevelEmitter,
+        emit_failure: FailureEmitter,
+        emit_meeting: MeetingEmitter,
+    ) -> Result<Self, String> {
         let (commands, receiver) = std::sync::mpsc::channel();
         let (ready, started) = std::sync::mpsc::sync_channel(1);
         std::thread::Builder::new()
             .name("lma-capture".to_owned())
-            .spawn(move || NativeWorker::new(receiver, emit_levels, emit_failure).run(ready))
+            .spawn(move || {
+                NativeWorker::new(receiver, emit_levels, emit_failure, emit_meeting).run(ready)
+            })
             .map_err(|error| format!("capture worker could not start: {error}"))?;
         started
             .recv()
@@ -843,6 +877,7 @@ struct NativeWorker {
     commands: std::sync::mpsc::Receiver<NativeCommand>,
     emit_levels: LevelEmitter,
     emit_failure: FailureEmitter,
+    emit_meeting: MeetingEmitter,
     runtime: Option<tokio::runtime::Runtime>,
     system_frames: Option<std::sync::mpsc::Receiver<lma_capture::macos::MonoFrames>>,
     microphone_frames: Option<std::sync::mpsc::Receiver<lma_capture::macos::MonoFrames>>,
@@ -861,11 +896,13 @@ impl NativeWorker {
         commands: std::sync::mpsc::Receiver<NativeCommand>,
         emit_levels: LevelEmitter,
         emit_failure: FailureEmitter,
+        emit_meeting: MeetingEmitter,
     ) -> Self {
         Self {
             commands,
             emit_levels,
             emit_failure,
+            emit_meeting,
             runtime: None,
             system_frames: None,
             microphone_frames: None,
@@ -1099,12 +1136,11 @@ impl NativeWorker {
     fn process_link_events(&mut self) {
         let error = self.link_events.as_mut().and_then(|events| loop {
             match events.try_recv() {
-                Ok(lma_link::LinkEvent::Error { code, .. })
-                    if code != lma_link::ErrorCode::SttStreamReset =>
-                {
-                    break Some(code)
-                }
-                Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+                Ok(event) => match bridge_link_event(event, &self.emit_meeting) {
+                    Some(code) if code != lma_link::ErrorCode::SttStreamReset => break Some(code),
+                    _ => continue,
+                },
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
                 Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break None,
                 Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break None,
             }
@@ -1353,9 +1389,29 @@ mod tests {
     use crate::capture_state::{CapturePhase, CaptureState, SourceReadiness};
 
     use super::{
-        AppCapture, CaptureBackend, CaptureDeviceSelection, CapturePermissionKind, LinkOptions,
-        PermissionSnapshot,
+        bridge_link_event, AppCapture, CaptureBackend, CaptureDeviceSelection,
+        CapturePermissionKind, LinkOptions, MeetingEmitter, PermissionSnapshot,
     };
+
+    #[test]
+    fn bridge_emits_transcript_partials_and_finals_as_meeting_events() {
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let captured = emitted.clone();
+        let emitter: MeetingEmitter = Arc::new(move |event| captured.lock().unwrap().push(event));
+        for (transcript, partial) in [("partial", true), ("final", false)] {
+            let event = lma_link::LinkEvent::MeetingEvent(serde_json::json!({
+                "EventType": "ADD_TRANSCRIPT_SEGMENT", "CallId": "call-1", "SegmentId": "s1",
+                "Channel": "CALLER", "StartTime": 0.0, "EndTime": 1.0,
+                "Transcript": transcript, "IsPartial": partial
+            }));
+            assert_eq!(bridge_link_event(event, &emitter), None);
+        }
+        let emitted = emitted.lock().unwrap();
+        assert_eq!(emitted.len(), 2);
+        assert_eq!(emitted[0]["Transcript"], "partial");
+        assert_eq!(emitted[1]["Transcript"], "final");
+        assert_eq!(emitted[1]["IsPartial"], false);
+    }
 
     #[test]
     fn link_options_reject_invalid_provider_settings_before_capture_starts() {
@@ -1765,7 +1821,7 @@ mod tests {
 
         let error = service.start(LinkOptions::test_default()).unwrap_err();
 
-        assert_eq!(error, "capture permissions are not granted");
+        assert_eq!(error, lma_link::ErrorCode::CapturePermissionDenied.as_str());
         assert_eq!(service.status().phase, CapturePhase::Failed);
         assert!(actions.lock().unwrap().is_empty());
         assert!(!app_data.join("recordings").exists());
@@ -1998,6 +2054,7 @@ mod tests {
             Arc::new(move |generation, error| {
                 emitted.lock().unwrap().push((generation, error));
             }),
+            Arc::new(|_| {}),
         );
         worker.active_generation = Some(7);
         let (events, source_events) = std::sync::mpsc::channel();
@@ -2069,6 +2126,7 @@ mod tests {
             Arc::new(move |generation, error| {
                 emitted.lock().unwrap().push((generation, error));
             }),
+            Arc::new(|_| {}),
         );
         worker.active_generation = Some(9);
         let starts = Rc::new(Cell::new(0));
