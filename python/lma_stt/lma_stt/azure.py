@@ -137,9 +137,10 @@ class AzureResultStream:
         header = (
             f"Path: audio\r\nX-RequestId: {self.request_id}\r\nContent-Type: audio/x-wav\r\n\r\n"
         ).encode()
-        body = (wav_header(len(audio)) if self.first_audio else b"") + audio
-        self.first_audio = False
-        await self.conn.send(header + body)
+        if self.first_audio:
+            await self.conn.send(header + wav_header(0))
+            self.first_audio = False
+        await self.conn.send(header + audio)
 
     async def close(self) -> None:
         if self._closing:
@@ -243,23 +244,29 @@ class AzureEngine:
             "recognition": {"outputFormat": "Detailed"},
         }
         streams = []
-        for channel in ("CALLER", "AGENT"):
-            connection_id = uuid.uuid4().hex
-            try:
-                conn = await self._connect(
-                    build_url(self.config, connection_id),
-                    {"Ocp-Apim-Subscription-Key": self.config.api_key},
+        try:
+            for channel in ("CALLER", "AGENT"):
+                connection_id = uuid.uuid4().hex
+                try:
+                    conn = await self._connect(
+                        build_url(self.config, connection_id),
+                        {"Ocp-Apim-Subscription-Key": self.config.api_key},
+                    )
+                except Exception as exc:
+                    raise _connection_error(exc) from exc
+                status = conn.response.status_code
+                if status in (401, 403):
+                    raise ProviderAuthError(f"handshake rejected with HTTP {status}")
+                if status >= 400:
+                    raise ProviderResetError(f"handshake failed with HTTP {status}")
+                await conn.send(
+                    "Path: speech.config\r\nContent-Type: application/json\r\n\r\n"
+                    + json.dumps(config_frame)
                 )
-            except Exception as exc:
-                raise _connection_error(exc) from exc
-            status = conn.response.status_code
-            if status in (401, 403):
-                raise ProviderAuthError(f"handshake rejected with HTTP {status}")
-            if status >= 400:
-                raise ProviderResetError(f"handshake failed with HTTP {status}")
-            await conn.send(
-                "Path: speech.config\r\nContent-Type: application/json\r\n\r\n"
-                + json.dumps(config_frame)
-            )
-            streams.append(AzureResultStream(conn, channel, ctx["sample_rate"], clock=self.clock))
+                streams.append(
+                    AzureResultStream(conn, channel, ctx["sample_rate"], clock=self.clock)
+                )
+        except Exception:
+            await asyncio.gather(*(stream.close() for stream in streams))
+            raise
         return _AzureChannelResultStream(streams)
