@@ -39,6 +39,36 @@ struct Session {
     diarization: bool,
 }
 
+struct FrameAssembler {
+    frame_bytes: usize,
+    pcm: Vec<u8>,
+}
+
+impl FrameAssembler {
+    fn new(rate: usize) -> Self {
+        Self {
+            frame_bytes: StereoChunk::byte_len(rate),
+            pcm: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, chunk: StereoChunk) -> Vec<StereoChunk> {
+        if chunk.pcm.len() != chunk.frames * 4 || !chunk.pcm.len().is_multiple_of(4) {
+            return Vec::new();
+        }
+        self.pcm.extend(chunk.pcm);
+        let mut frames = Vec::new();
+        while self.pcm.len() >= self.frame_bytes {
+            let pcm = self.pcm.drain(..self.frame_bytes).collect();
+            frames.push(StereoChunk {
+                pcm,
+                frames: self.frame_bytes / 4,
+            });
+        }
+        frames
+    }
+}
+
 impl LinkClient {
     pub fn new() -> Self {
         let (commands, receiver) = mpsc::unbounded_channel();
@@ -112,6 +142,7 @@ async fn run(
 ) {
     let mut session = None;
     let mut buffer = None;
+    let mut assembler = None;
     let mut retry_delay = Duration::from_millis(500);
 
     loop {
@@ -122,6 +153,7 @@ async fn run(
             match command {
                 Command::Start(next, reply) => {
                     buffer = Some(ReconnectBuffer::new(next.rate));
+                    assembler = Some(FrameAssembler::new(next.rate));
                     session = Some(next);
                     retry_delay = Duration::from_millis(500);
                     let _ = reply.send(Ok(()));
@@ -140,6 +172,7 @@ async fn run(
                     retry_delay,
                     &mut session,
                     &mut buffer,
+                    &mut assembler,
                     &events,
                 )
                 .await;
@@ -159,6 +192,7 @@ async fn run(
                 retry_delay,
                 &mut session,
                 &mut buffer,
+                &mut assembler,
                 &events,
             )
             .await;
@@ -174,6 +208,16 @@ async fn run(
         .await
         .is_err()
         {
+            wait_for_retry(
+                &mut commands,
+                retry_delay,
+                &mut session,
+                &mut buffer,
+                &mut assembler,
+                &events,
+            )
+            .await;
+            retry_delay = (retry_delay * 2).min(Duration::from_secs(10));
             continue;
         }
 
@@ -185,13 +229,14 @@ async fn run(
                     }
                     Some(Command::Start(next, reply)) => {
                         buffer = Some(ReconnectBuffer::new(next.rate));
+                        assembler = Some(FrameAssembler::new(next.rate));
                         session = Some(next);
                         let _ = reply.send(Ok(()));
                         break;
                     }
                     Some(Command::Chunk(chunk)) => {
-                        if socket.send(Message::Binary(chunk.pcm.clone().into())).await.is_err() {
-                            push_buffer(&mut buffer, chunk, &events);
+                        let frames = assembler.as_mut().expect("assembler follows session").push(chunk);
+                        if send_frames(&mut socket, frames, &mut buffer, &events).await.is_err() {
                             break;
                         }
                     }
@@ -205,6 +250,7 @@ async fn run(
                         let _ = send_control(&mut socket, ControlMessage::end(&active.call_id)).await;
                         session = None;
                         buffer = None;
+                        assembler = None;
                         break;
                     }
                     None => return,
@@ -225,6 +271,7 @@ async fn run(
                 retry_delay,
                 &mut session,
                 &mut buffer,
+                &mut assembler,
                 &events,
             )
             .await;
@@ -238,6 +285,7 @@ async fn wait_for_retry(
     delay: Duration,
     session: &mut Option<Session>,
     buffer: &mut Option<ReconnectBuffer>,
+    assembler: &mut Option<FrameAssembler>,
     events: &broadcast::Sender<crate::LinkEvent>,
 ) {
     let sleep = tokio::time::sleep(delay);
@@ -252,12 +300,16 @@ async fn wait_for_retry(
                 Command::Start(next, reply) => {
                     if session.as_ref() != Some(&next) {
                         *buffer = Some(ReconnectBuffer::new(next.rate));
+                        *assembler = Some(FrameAssembler::new(next.rate));
                         *session = Some(next);
                     }
                     let _ = reply.send(Ok(()));
                 }
-                Command::Chunk(chunk) => push_buffer(buffer, chunk, events),
-                Command::End => { *session = None; *buffer = None; },
+                Command::Chunk(chunk) => {
+                    let frames = assembler.as_mut().expect("assembler follows session").push(chunk);
+                    for frame in frames { push_buffer(buffer, frame, events); }
+                }
+                Command::End => { *session = None; *buffer = None; *assembler = None; },
                 Command::Pause | Command::Resume => {}
             }
                 }
@@ -304,8 +356,28 @@ async fn flush(
     socket: &mut Socket,
     buffer: &mut ReconnectBuffer,
 ) -> std::result::Result<(), tokio_tungstenite::tungstenite::Error> {
-    for chunk in buffer.drain() {
+    while let Some(chunk) = buffer.front().cloned() {
         socket.send(Message::Binary(chunk.pcm.into())).await?;
+        buffer.pop_front();
+    }
+    Ok(())
+}
+
+async fn send_frames(
+    socket: &mut Socket,
+    frames: Vec<StereoChunk>,
+    buffer: &mut Option<ReconnectBuffer>,
+    events: &broadcast::Sender<crate::LinkEvent>,
+) -> std::result::Result<(), tokio_tungstenite::tungstenite::Error> {
+    let mut frames = frames.into_iter();
+    while let Some(chunk) = frames.next() {
+        if let Err(error) = socket.send(Message::Binary(chunk.pcm.clone().into())).await {
+            push_buffer(buffer, chunk, events);
+            for chunk in frames {
+                push_buffer(buffer, chunk, events);
+            }
+            return Err(error);
+        }
     }
     Ok(())
 }
@@ -319,13 +391,36 @@ mod tests {
     use tokio::{
         net::TcpListener,
         sync::Mutex,
-        time::{sleep, timeout, Duration},
+        time::{sleep, timeout, Duration, Instant},
     };
     use tokio_tungstenite::{accept_async, tungstenite::Message};
 
     use crate::LinkEvent;
 
     use super::LinkClient;
+
+    #[test]
+    fn reframes_partial_and_oversized_pcm_into_exact_hundred_millisecond_chunks() {
+        let mut framer = super::FrameAssembler::new(100);
+        let first = framer.push(StereoChunk {
+            pcm: vec![1; 24],
+            frames: 6,
+        });
+        let second = framer.push(StereoChunk {
+            pcm: vec![2; 56],
+            frames: 14,
+        });
+
+        assert!(first.is_empty());
+        assert_eq!(second.len(), 2);
+        assert!(second
+            .iter()
+            .all(|chunk| chunk.pcm.len() == 40 && chunk.frames == 10));
+        assert_eq!(
+            second[0].pcm,
+            [1; 24].into_iter().chain([2; 16]).collect::<Vec<_>>()
+        );
+    }
 
     #[tokio::test]
     async fn reports_when_the_reconnect_buffer_drops_audio() {
@@ -375,7 +470,10 @@ mod tests {
                 let Message::Text(start) = start else {
                     panic!("START must be text")
                 };
-                server_starts.lock().await.push(start.to_string());
+                server_starts
+                    .lock()
+                    .await
+                    .push((Instant::now(), start.to_string()));
                 if attempt == 0 {
                     socket
                         .close(None)
@@ -399,8 +497,9 @@ mod tests {
             48_000,
             true,
         );
-        first.await.expect("first start succeeds");
-        second.await.expect("second start joins in-flight attempt");
+        let (first, second) = tokio::join!(first, second);
+        first.expect("first start succeeds");
+        second.expect("second start joins in-flight attempt");
         timeout(Duration::from_secs(3), async {
             loop {
                 if starts.lock().await.len() == 2 {
@@ -414,7 +513,10 @@ mod tests {
         server.await.expect("server task completes");
         let starts = starts.lock().await;
         assert_eq!(starts.len(), 2);
-        assert_eq!(starts[0], starts[1]);
-        assert!(starts[0].contains("\"CallId\":\"123e4567-e89b-12d3-a456-426614174000\""));
+        assert!(starts[1].0.duration_since(starts[0].0) >= Duration::from_millis(450));
+        assert_eq!(starts[0].1, starts[1].1);
+        assert!(starts[0]
+            .1
+            .contains("\"CallId\":\"123e4567-e89b-12d3-a456-426614174000\""));
     }
 }

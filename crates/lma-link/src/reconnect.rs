@@ -37,6 +37,16 @@ impl ReconnectBuffer {
         self.chunks.drain(..).collect()
     }
 
+    pub fn front(&self) -> Option<&StereoChunk> {
+        self.chunks.front()
+    }
+
+    pub fn pop_front(&mut self) -> Option<StereoChunk> {
+        let chunk = self.chunks.pop_front()?;
+        self.buffered_bytes -= chunk.pcm.len();
+        Some(chunk)
+    }
+
     pub fn dropped_frames(&self) -> usize {
         self.dropped_frames
     }
@@ -67,5 +77,19 @@ mod tests {
             [20, 10]
         );
         assert_eq!(buffer.dropped_frames(), 10);
+    }
+
+    #[test]
+    fn retains_the_unsent_tail_after_a_partial_flush() {
+        let mut buffer = ReconnectBuffer::new(10);
+        buffer.push(chunk(10));
+        buffer.push(chunk(10));
+
+        assert_eq!(buffer.front().expect("first chunk").pcm[0], 10);
+        buffer
+            .pop_front()
+            .expect("successful send removes only first chunk");
+
+        assert_eq!(buffer.drain().len(), 1);
     }
 }
