@@ -20,11 +20,11 @@ depends on launch mode:
 
 | Launch mode | Sidecar stdout/stderr |
 |---|---|
-| `cargo tauri dev` | interleaved in the foreground terminal. The one line to keep is `SIDECAR_READY port=<port> token=<hex>` — the shell parses it, and the token admits manual clients for that process's lifetime. |
+| `cargo tauri dev` | interleaved in the foreground terminal. The one line to keep is `SIDECAR_READY port=<port> token=<hex>` — the shell parses it, then the readiness stdout pipe closes. The token remains private to the shell and is never shown in the webview. |
 | Bundled app | appended under `<app-data>/logs/` — see [Logs and data locations](prerequisites-and-install.md#logs-and-data-locations). |
 
-After a respawn the shell reissues a token; a client presenting the old one
-gets HTTP 401 ([WebSocket Streaming API](websocket-streaming-api.md#sidecar-lifecycle)).
+After a respawn the shell reissues a token internally; a client presenting the
+old one gets HTTP 401 ([WebSocket Streaming API](websocket-streaming-api.md#sidecar-lifecycle)).
 
 ### Container logs (Virtual Participant)
 
@@ -147,6 +147,11 @@ link/sidecar log when filing a capture-loss bug.
 
 **`STT_PROVIDER_AUTH`** — key invalid, expired, or lacks streaming
 entitlements. Re-enter it in Settings; keys are stored in the OS keychain.
+
+**`SIDECAR_UNAVAILABLE` immediately after Start** — the selected provider key
+is missing or the sidecar could not start. Save a provider key in the app,
+then retry. The desktop shell keeps the sidecar token and port private; do not
+work around this by adding them to the UI or command line.
 
 **`STT_STREAM_RESET` repeated** — check provider status and network; five
 consecutive failures stop the stream by design. A session that survives ≥10 s
