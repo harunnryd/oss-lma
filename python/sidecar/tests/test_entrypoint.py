@@ -1,4 +1,5 @@
 import os
+import select
 import signal
 import subprocess
 import sys
@@ -68,23 +69,25 @@ async def test_main_reads_private_runtime_payload_and_uses_real_engine(monkeypat
     assert captured["engine"].__class__.__name__ == "DeepgramEngine"
 
 
-def test_subprocess_prints_ready_line_then_shuts_down_on_sigterm():
+def test_subprocess_stdout_closes_after_exactly_one_ready_line():
     proc = subprocess.Popen(
         [sys.executable, "-m", "sidecar"],
         cwd=PYTHON_DIR,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
         stdin=subprocess.PIPE,
         env=subprocess_env(),
     )
     try:
-        proc.stdin.buffer.write(runtime_payload())
-        proc.stdin.buffer.flush()
+        proc.stdin.write(runtime_payload())
+        proc.stdin.flush()
         proc.stdin.close()
-        line = proc.stdout.readline()
-        match = READY_LINE.fullmatch(line)
-        assert match is not None
+        line = proc.stdout.readline().decode()
+        assert READY_LINE.fullmatch(line) is not None
+        readable, _, _ = select.select([proc.stdout], [], [], 2)
+        assert readable == [proc.stdout]
+        assert proc.stdout.read() == b""
+        assert proc.poll() is None
         proc.send_signal(signal.SIGTERM)
         assert proc.wait(timeout=10) == 0
     finally:
