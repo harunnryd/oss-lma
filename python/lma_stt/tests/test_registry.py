@@ -1,6 +1,8 @@
+import io
+
 import pytest
 
-from lma_stt.config import ConfigurationError, RuntimeConfig
+from lma_stt.config import ConfigurationError, RuntimeConfig, read_runtime_config
 from lma_stt.deepgram import DeepgramEngine
 from lma_stt.engine import EngineRegistry
 
@@ -42,3 +44,10 @@ def test_registry_selects_deepgram_from_runtime_config():
 def test_unknown_provider_and_missing_secret_are_rejected(config):
     with pytest.raises(ConfigurationError):
         EngineRegistry.from_runtime_config(config)
+
+
+def test_non_utf8_runtime_payload_is_rejected_as_configuration_error():
+    payload = b"\xff"
+
+    with pytest.raises(ConfigurationError, match="valid JSON"):
+        read_runtime_config(io.BytesIO(len(payload).to_bytes(4, "big") + payload))

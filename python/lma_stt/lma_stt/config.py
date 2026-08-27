@@ -54,7 +54,7 @@ def read_runtime_config(stdin: BinaryIO) -> RuntimeConfig:
         raise ConfigurationError("runtime configuration has an invalid length")
     try:
         payload = json.loads(_read_exact(stdin, length))
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise ConfigurationError("runtime configuration is not valid JSON") from exc
     return RuntimeConfig.from_payload(payload)
 
