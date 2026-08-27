@@ -1,4 +1,5 @@
 pub mod capture_state;
+pub mod settings;
 pub mod commands {
     pub mod capture;
 }

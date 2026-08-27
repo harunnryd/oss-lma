@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, Runtime};
 
 use crate::capture_state::{CaptureSnapshot, CaptureState, SourceReadiness};
+use crate::settings::{ProviderSettings, SettingsError};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -75,6 +76,21 @@ pub struct LinkOptions {
     pub token: String,
     #[serde(default)]
     pub diarize_microphone: bool,
+}
+
+impl LinkOptions {
+    pub fn with_provider_settings(
+        port: u16,
+        token: String,
+        settings: &ProviderSettings,
+    ) -> Result<Self, SettingsError> {
+        settings.validate()?;
+        Ok(Self {
+            port,
+            token,
+            diarize_microphone: settings.diarize_mic,
+        })
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1166,6 +1182,20 @@ mod tests {
         AppCapture, CaptureBackend, CaptureDeviceSelection, CapturePermissionKind, LinkOptions,
         PermissionSnapshot,
     };
+
+    #[test]
+    fn link_options_reject_invalid_provider_settings_before_capture_starts() {
+        let settings = crate::settings::ProviderSettings {
+            provider: crate::settings::ProviderKind::Deepgram,
+            model: " ".to_owned(),
+            language: None,
+            azure_region: None,
+            diarize_system: false,
+            diarize_mic: false,
+        };
+
+        assert!(LinkOptions::with_provider_settings(8765, "token".to_owned(), &settings).is_err());
+    }
 
     impl LinkOptions {
         fn test_default() -> Self {
