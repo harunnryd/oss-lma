@@ -1,4 +1,5 @@
 use std::fs;
+use std::process::Command;
 
 #[test]
 fn tauri_frontend_dist_contains_index_html() {
@@ -11,4 +12,81 @@ fn tauri_frontend_dist_contains_index_html() {
         .as_str()
         .expect("frontendDist is configured");
     assert!(root.join(frontend_dist).join("index.html").is_file());
+}
+
+#[test]
+fn frontend_contains_provider_settings_and_live_transcript_surfaces() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let index = fs::read_to_string(root.join("ui/index.html")).expect("index exists");
+    let app = fs::read_to_string(root.join("ui/app.js")).expect("app exists");
+
+    for required_surface in [
+        "id=\"provider-settings\"",
+        "id=\"provider\"",
+        "id=\"provider-secret\"",
+        "id=\"permission-status\"",
+        "id=\"transcript\"",
+        "id=\"start\"",
+        "id=\"pause\"",
+        "id=\"resume\"",
+        "id=\"stop\"",
+    ] {
+        assert!(
+            index.contains(required_surface),
+            "missing {required_surface}"
+        );
+    }
+
+    for required_behavior in [
+        "updateTranscript",
+        "SegmentId",
+        "IsPartial",
+        "ADD_TRANSCRIPT_SEGMENT",
+        "capture-status",
+        "provider_settings",
+    ] {
+        assert!(
+            app.contains(required_behavior),
+            "missing {required_behavior}"
+        );
+    }
+
+    for forbidden_detail in ["port: 8765", "token:", "endpoint"] {
+        assert!(
+            index.contains(forbidden_detail) == false,
+            "contains {forbidden_detail}"
+        );
+        assert!(
+            app.contains(forbidden_detail) == false,
+            "contains {forbidden_detail}"
+        );
+    }
+}
+
+#[test]
+fn transcript_updates_replace_partial_segments_with_final_segments() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let fixture = r#"
+const fs = require('fs');
+const rows = [];
+const element = () => ({ value: '', checked: false, hidden: false, textContent: '', disabled: false, dataset: {}, classList: { toggle() {} }, addEventListener() {} });
+const byId = new Map();
+for (const id of ['phase', 'message', 'transcript', 'provider', 'model', 'language', 'azure-region', 'diarize-mic', 'secret-status', 'azure-region-field', 'permissions', 'screen', 'provider-form', 'start', 'pause', 'resume', 'stop', 'provider-secret', 'permission-status']) byId.set(`#${id}`, element());
+byId.get('#transcript').append = row => rows.push(row);
+byId.get('#transcript').querySelector = selector => rows.find(row => selector.includes(row.dataset.segmentId));
+global.window = { __TAURI__: {}, ossLma: undefined };
+global.document = { querySelector: selector => byId.get(selector), createElement: () => element() };
+global.CSS = { escape: value => value };
+eval(fs.readFileSync(process.argv[1], 'utf8'));
+if (!window.ossLma.updateTranscript({ EventType: 'ADD_TRANSCRIPT_SEGMENT', SegmentId: 's1', Transcript: 'partial', IsPartial: true })) process.exit(1);
+if (!window.ossLma.updateTranscript({ EventType: 'ADD_TRANSCRIPT_SEGMENT', SegmentId: 's1', Transcript: 'final', IsPartial: false })) process.exit(1);
+if (rows.length !== 1 || rows[0].textContent !== 'final') process.exit(1);
+"#;
+    let output = Command::new("node")
+        .arg("-e")
+        .arg(fixture)
+        .arg(root.join("ui/app.js"))
+        .output()
+        .expect("node is available for the browserless frontend fixture");
+    assert!(output.status.success(), "fixture failed: {output:?}");
 }
