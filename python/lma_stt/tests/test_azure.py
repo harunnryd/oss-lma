@@ -1,6 +1,8 @@
 import asyncio
 import json
 
+import pytest
+
 from lma_stt.azure import AzureConfig, AzureEngine, AzureResultStream, map_messages
 from lma_stt.fixtures import load_fixture
 from lma_stt.tests.transports import FakeTransport
@@ -67,9 +69,33 @@ def test_azure_closes_caller_when_agent_setup_fails():
             {"call_id": "id", "sample_rate": 16_000, "diarize": {}, "language_hints": []}
         )
 
-    import pytest
     from lma_stt.types import ProviderResetError
 
     with pytest.raises(ProviderResetError):
         asyncio.run(run())
     assert caller.closed is True
+
+
+def test_azure_closes_both_connections_when_agent_config_send_fails():
+    caller, agent = FakeTransport(), FakeTransport()
+    connections = iter([caller, agent])
+
+    async def connect(_url, _headers):
+        return next(connections)
+
+    async def fail_config(payload):
+        if isinstance(payload, str):
+            raise OSError("agent config failed")
+        agent.sent.append(payload)
+
+    agent.send = fail_config
+
+    async def run():
+        await AzureEngine(AzureConfig("key", "eastus"), connect=connect).start(
+            {"call_id": "id", "sample_rate": 16_000, "diarize": {}, "language_hints": []}
+        )
+
+    with pytest.raises(OSError, match="agent config failed"):
+        asyncio.run(run())
+    assert caller.closed is True
+    assert agent.closed is True
