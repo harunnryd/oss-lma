@@ -74,7 +74,8 @@ const byId = new Map();
 for (const id of ['phase', 'message', 'transcript', 'provider', 'model', 'language', 'azure-region', 'diarize-mic', 'secret-status', 'azure-region-field', 'permissions', 'screen', 'provider-form', 'start', 'pause', 'resume', 'stop', 'provider-secret', 'permission-status']) byId.set(`#${id}`, element());
 byId.get('#transcript').append = row => rows.push(row);
 byId.get('#transcript').querySelector = selector => rows.find(row => selector.includes(row.dataset.segmentId));
-global.window = { __TAURI__: {}, ossLma: undefined };
+const listeners = {};
+global.window = { __TAURI__: { event: { listen: (name, handler) => { listeners[name] = handler; return Promise.resolve(() => {}); } } }, ossLma: undefined };
 global.document = { querySelector: selector => byId.get(selector), createElement: () => element() };
 global.CSS = { escape: value => value };
 eval(fs.readFileSync(process.argv[1], 'utf8'));
@@ -84,6 +85,9 @@ if (rows.length !== 1 || rows[0].textContent !== 'final') process.exit(1);
 const codes = ['STT_PROVIDER_AUTH', 'STT_STREAM_RESET', 'LINK_DISCONNECTED', 'CAPTURE_DEVICE_LOST', 'CAPTURE_PERMISSION_DENIED', 'VP_CONTAINER_FAILED', 'VP_MANUAL_ACTION_REQUIRED', 'AGENT_TOOL_FAILURE', 'RAG_EMBEDDING_UNAVAILABLE', 'DB_WRITE_CONFLICT', 'SIDECAR_UNAVAILABLE', 'PORT_BIND_FAILED'];
 if (codes.some(code => window.ossLma.recoveryMessage(code) === code)) process.exit(1);
 if (window.ossLma.recoveryMessage('UNKNOWN_CODE') !== 'UNKNOWN_CODE') process.exit(1);
+listeners['meeting-event']({ payload: { EventType: 'ERROR', CallId: 'call-1', Code: 'STT_STREAM_RESET', Context: {} } });
+if (byId.get('#message').textContent !== 'The transcription stream reset. It will reconnect automatically.') process.exit(1);
+if (rows.length !== 1) process.exit(1);
 "#;
     let output = Command::new("node")
         .arg("-e")
