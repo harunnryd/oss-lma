@@ -235,13 +235,18 @@ inner binary do not transfer to the app. Ad-hoc-signed rebuilds may acquire a
 new TCC identity and need new grants; a persistent development certificate
 avoids that churn.
 
-The `capture_permissions` command reports both grants and `capture_devices`
-lists input/output devices. `set_capture_devices` accepts a microphone ID or
-no microphone ID for the OS default, but rejects any `systemOutputId`: macOS
-ScreenCaptureKit captures only the active default output. Device settings are
-immutable during an active meeting. A default-device change or selected-device
-disconnect triggers a rebuild of only the affected source, so a successful
-rebuild does not end the meeting.
+The `capture_permissions` command reports both grants. The
+`open_capture_permission_settings` command accepts `screenRecording` or
+`microphone` and opens the matching Privacy & Security pane. Screen Recording
+denials are retained in the app's preferences so preflight remains actionable
+after relaunch. `capture_devices` lists input/output devices.
+`set_capture_devices` accepts a microphone ID or no microphone ID for the OS
+default, but rejects any `systemOutputId`: macOS ScreenCaptureKit captures only
+the active default output. Device settings are immutable during an active
+meeting. A default-device change or selected-device disconnect triggers a
+rebuild of only the affected source. An unavailable selected microphone is
+retried with bounded backoff while the meeting stays active; alignment keeps
+at most three seconds of the peer channel until the microphone returns.
 
 `capture-levels` emits separate `system` and `microphone` levels. Do not start
 a manual recording until both meters move: meeting startup also rejects a

@@ -24,6 +24,13 @@ pub struct PermissionSnapshot {
     pub microphone: PermissionStatus,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum CapturePermissionKind {
+    ScreenRecording,
+    Microphone,
+}
+
 impl PermissionSnapshot {
     pub fn granted() -> Self {
         Self {
@@ -79,6 +86,7 @@ pub struct LevelMeters {
 
 pub trait CaptureBackend: Send {
     fn permissions(&mut self) -> Result<PermissionSnapshot, String>;
+    fn open_permission_settings(&mut self, kind: CapturePermissionKind) -> Result<(), String>;
     fn devices(&mut self) -> Result<Vec<CaptureDevice>, String>;
     fn start_sources(
         &mut self,
@@ -175,6 +183,10 @@ impl AppCapture {
 
     pub fn permissions(&self) -> Result<PermissionSnapshot, String> {
         self.backend.lock().unwrap().permissions()
+    }
+
+    pub fn open_permission_settings(&self, kind: CapturePermissionKind) -> Result<(), String> {
+        self.backend.lock().unwrap().open_permission_settings(kind)
     }
 
     pub fn devices(&self) -> Result<Vec<CaptureDevice>, String> {
@@ -383,6 +395,10 @@ struct NativeCaptureBackend {
 #[cfg(target_os = "macos")]
 enum NativeCommand {
     Permissions(std::sync::mpsc::SyncSender<Result<PermissionSnapshot, String>>),
+    OpenPermissionSettings(
+        CapturePermissionKind,
+        std::sync::mpsc::SyncSender<Result<(), String>>,
+    ),
     Devices(std::sync::mpsc::SyncSender<Result<Vec<CaptureDevice>, String>>),
     StartSources(
         CaptureDeviceSelection,
@@ -446,6 +462,10 @@ impl CaptureBackend for NativeCaptureBackend {
         self.request(NativeCommand::Permissions)
     }
 
+    fn open_permission_settings(&mut self, kind: CapturePermissionKind) -> Result<(), String> {
+        self.request(|reply| NativeCommand::OpenPermissionSettings(kind, reply))
+    }
+
     fn devices(&mut self) -> Result<Vec<CaptureDevice>, String> {
         self.request(NativeCommand::Devices)
     }
@@ -500,6 +520,15 @@ pub struct NativePipeline {
     microphone: Option<lma_capture::macos::SourceHandle>,
     source_events: Option<std::sync::mpsc::Receiver<lma_capture::macos::SourceEvent>>,
     selection: CaptureDeviceSelection,
+    rebuild_retries: Vec<RebuildRetry>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+struct RebuildRetry {
+    kind: lma_capture::macos::SourceKind,
+    next_attempt: std::time::Instant,
+    delay: std::time::Duration,
 }
 
 #[cfg(target_os = "macos")]
@@ -510,6 +539,7 @@ impl NativePipeline {
             microphone: None,
             source_events: None,
             selection: CaptureDeviceSelection::default(),
+            rebuild_retries: Vec::new(),
         }
     }
 
@@ -524,10 +554,15 @@ impl NativePipeline {
             microphone: Some(microphone),
             source_events: Some(source_events),
             selection,
+            rebuild_retries: Vec::new(),
         }
     }
 
     pub fn process_source_events(&mut self) -> Result<(), String> {
+        self.process_source_events_at(std::time::Instant::now())
+    }
+
+    fn process_source_events_at(&mut self, now: std::time::Instant) -> Result<(), String> {
         let events = self
             .source_events
             .as_ref()
@@ -536,29 +571,83 @@ impl NativePipeline {
         for event in events {
             match event {
                 lma_capture::macos::SourceEvent::RebuildRequired(kind) => {
-                    let result = match kind {
-                        lma_capture::macos::SourceKind::System => {
-                            self.system.as_mut().map(|source| {
-                                source.rebuild(native_selection(&self.selection.system_output_id))
-                            })
-                        }
-                        lma_capture::macos::SourceKind::Microphone => {
-                            self.microphone.as_mut().map(|source| {
-                                source.rebuild(native_selection(&self.selection.microphone_id))
-                            })
-                        }
-                    };
-                    if let Some(result) = result {
-                        result?;
-                    }
+                    self.attempt_rebuild(kind, now)?;
                 }
-                lma_capture::macos::SourceEvent::Error(_, error) => return Err(error),
-                lma_capture::macos::SourceEvent::Started(_)
-                | lma_capture::macos::SourceEvent::Stopped(_)
+                lma_capture::macos::SourceEvent::Error(kind, error) => {
+                    self.clear_rebuild(kind);
+                    return Err(error);
+                }
+                lma_capture::macos::SourceEvent::Started(kind) => self.clear_rebuild(kind),
+                lma_capture::macos::SourceEvent::Stopped(_)
                 | lma_capture::macos::SourceEvent::CleanupWarning(_, _) => {}
             }
         }
+        let due = self
+            .rebuild_retries
+            .iter()
+            .filter(|retry| retry.next_attempt <= now)
+            .map(|retry| retry.kind)
+            .collect::<Vec<_>>();
+        for kind in due {
+            self.attempt_rebuild(kind, now)?;
+        }
         Ok(())
+    }
+
+    fn attempt_rebuild(
+        &mut self,
+        kind: lma_capture::macos::SourceKind,
+        now: std::time::Instant,
+    ) -> Result<(), String> {
+        let selection = match kind {
+            lma_capture::macos::SourceKind::System => {
+                native_selection(&self.selection.system_output_id)
+            }
+            lma_capture::macos::SourceKind::Microphone => {
+                native_selection(&self.selection.microphone_id)
+            }
+        };
+        let source = match kind {
+            lma_capture::macos::SourceKind::System => self.system.as_mut(),
+            lma_capture::macos::SourceKind::Microphone => self.microphone.as_mut(),
+        };
+        let Some(source) = source else {
+            return Ok(());
+        };
+        match source.rebuild(selection) {
+            Ok(()) => {
+                self.clear_rebuild(kind);
+                Ok(())
+            }
+            Err(error) if source.is_active() => Err(error),
+            Err(_) => {
+                self.schedule_rebuild(kind, now);
+                Ok(())
+            }
+        }
+    }
+
+    fn schedule_rebuild(&mut self, kind: lma_capture::macos::SourceKind, now: std::time::Instant) {
+        const MIN_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
+        const MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+        if let Some(retry) = self
+            .rebuild_retries
+            .iter_mut()
+            .find(|retry| retry.kind == kind)
+        {
+            retry.delay = (retry.delay * 2).min(MAX_DELAY);
+            retry.next_attempt = now + retry.delay;
+        } else {
+            self.rebuild_retries.push(RebuildRetry {
+                kind,
+                next_attempt: now + MIN_DELAY,
+                delay: MIN_DELAY,
+            });
+        }
+    }
+
+    fn clear_rebuild(&mut self, kind: lma_capture::macos::SourceKind) {
+        self.rebuild_retries.retain(|retry| retry.kind != kind);
     }
 
     pub fn source_active(&self, kind: lma_capture::macos::SourceKind) -> bool {
@@ -575,6 +664,7 @@ impl NativePipeline {
         self.system = None;
         self.microphone = None;
         self.source_events = None;
+        self.rebuild_retries.clear();
         system
             .into_iter()
             .chain(microphone)
@@ -669,6 +759,17 @@ impl NativeWorker {
                         lma_capture::macos::MacPermissions::microphone().status(),
                     ),
                 }));
+            }
+            NativeCommand::OpenPermissionSettings(kind, reply) => {
+                let permission = match kind {
+                    CapturePermissionKind::ScreenRecording => {
+                        lma_capture::macos::MacPermissions::screen_recording()
+                    }
+                    CapturePermissionKind::Microphone => {
+                        lma_capture::macos::MacPermissions::microphone()
+                    }
+                };
+                let _ = reply.send(permission.open_settings());
             }
             NativeCommand::Devices(reply) => {
                 let devices = lma_capture::macos::MacDevices::new()
@@ -916,6 +1017,10 @@ impl CaptureBackend for NativeCaptureBackend {
         Err("native capture is supported on macOS only".to_owned())
     }
 
+    fn open_permission_settings(&mut self, _kind: CapturePermissionKind) -> Result<(), String> {
+        Err("native capture is supported on macOS only".to_owned())
+    }
+
     fn devices(&mut self) -> Result<Vec<CaptureDevice>, String> {
         Err("native capture is supported on macOS only".to_owned())
     }
@@ -999,6 +1104,14 @@ pub fn capture_permissions(
 }
 
 #[tauri::command(async)]
+pub fn open_capture_permission_settings(
+    kind: CapturePermissionKind,
+    state: tauri::State<'_, AppCapture>,
+) -> Result<(), String> {
+    state.open_permission_settings(kind)
+}
+
+#[tauri::command(async)]
 pub fn capture_devices(state: tauri::State<'_, AppCapture>) -> Result<Vec<CaptureDevice>, String> {
     state.devices()
 }
@@ -1050,7 +1163,8 @@ mod tests {
     use crate::capture_state::{CapturePhase, CaptureState, SourceReadiness};
 
     use super::{
-        AppCapture, CaptureBackend, CaptureDeviceSelection, LinkOptions, PermissionSnapshot,
+        AppCapture, CaptureBackend, CaptureDeviceSelection, CapturePermissionKind, LinkOptions,
+        PermissionSnapshot,
     };
 
     impl LinkOptions {
@@ -1084,6 +1198,18 @@ mod tests {
     impl CaptureBackend for FakeBackend {
         fn permissions(&mut self) -> Result<PermissionSnapshot, String> {
             Ok(self.permissions.clone())
+        }
+
+        fn open_permission_settings(&mut self, kind: CapturePermissionKind) -> Result<(), String> {
+            let kind = match kind {
+                CapturePermissionKind::ScreenRecording => "screen-recording",
+                CapturePermissionKind::Microphone => "microphone",
+            };
+            self.actions
+                .lock()
+                .unwrap()
+                .push(format!("permissions:open:{kind}"));
+            Ok(())
         }
 
         fn devices(&mut self) -> Result<Vec<super::CaptureDevice>, String> {
@@ -1240,6 +1366,31 @@ mod tests {
         assert_eq!(service.status().phase, CapturePhase::Failed);
         assert!(actions.lock().unwrap().is_empty());
         assert!(!app_data.join("recordings").exists());
+    }
+
+    #[test]
+    fn permission_settings_action_is_forwarded_to_the_native_backend() {
+        let app_data = temporary_app_data("permission-settings");
+        let (service, actions) = service(
+            PermissionSnapshot {
+                screen_recording: super::PermissionStatus::Denied,
+                microphone: super::PermissionStatus::Granted,
+            },
+            SourceReadiness {
+                system: false,
+                microphone: false,
+            },
+            app_data,
+        );
+
+        service
+            .open_permission_settings(CapturePermissionKind::ScreenRecording)
+            .unwrap();
+
+        assert_eq!(
+            actions.lock().unwrap().last().map(String::as_str),
+            Some("permissions:open:screen-recording")
+        );
     }
 
     #[test]
@@ -1544,6 +1695,81 @@ mod tests {
         assert!(worker.pipeline.microphone.as_ref().unwrap().is_active());
         assert!(failures.lock().unwrap().is_empty());
         assert!(worker.pipeline.source_events.is_some());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unavailable_selected_microphone_retries_without_failing_the_meeting() {
+        use std::{cell::Cell, rc::Rc, time::Duration};
+
+        struct RetryStream;
+
+        impl lma_capture::macos::NativeStream for RetryStream {
+            fn stop(&mut self) -> Result<(), lma_capture::macos::NativeStopError> {
+                Ok(())
+            }
+        }
+
+        #[derive(Clone)]
+        struct RetryProvider {
+            starts: Rc<Cell<usize>>,
+        }
+
+        impl lma_capture::macos::NativeStreamProvider for RetryProvider {
+            fn start(
+                &self,
+                _kind: lma_capture::macos::SourceKind,
+                _selection: &lma_capture::macos::DeviceSelection,
+                _frames: std::sync::mpsc::Sender<lma_capture::macos::MonoFrames>,
+                _events: Arc<dyn lma_capture::macos::NativeStreamEvents>,
+            ) -> Result<Box<dyn lma_capture::macos::NativeStream>, String> {
+                let attempt = self.starts.get();
+                self.starts.set(attempt + 1);
+                if attempt == 1 {
+                    Err("selected microphone is unavailable".into())
+                } else {
+                    Ok(Box::new(RetryStream))
+                }
+            }
+        }
+
+        let starts = Rc::new(Cell::new(0));
+        let (events, source_events) = std::sync::mpsc::channel();
+        let (frames, _frame_receiver) = std::sync::mpsc::channel();
+        let microphone = lma_capture::macos::MacSource::with_provider(
+            lma_capture::macos::SourceKind::Microphone,
+            RetryProvider {
+                starts: starts.clone(),
+            },
+            events.clone(),
+        )
+        .start(
+            lma_capture::macos::DeviceSelection::DeviceId("selected-mic".into()),
+            frames,
+        );
+        let mut pipeline = super::NativePipeline::new();
+        pipeline.selection.microphone_id = Some("selected-mic".into());
+        pipeline.microphone = Some(microphone);
+        pipeline.source_events = Some(source_events);
+        events
+            .send(lma_capture::macos::SourceEvent::RebuildRequired(
+                lma_capture::macos::SourceKind::Microphone,
+            ))
+            .unwrap();
+        let now = std::time::Instant::now();
+
+        pipeline.process_source_events_at(now).unwrap();
+        assert!(!pipeline.source_active(lma_capture::macos::SourceKind::Microphone));
+        pipeline
+            .process_source_events_at(now + Duration::from_millis(99))
+            .unwrap();
+        assert_eq!(starts.get(), 2);
+        pipeline
+            .process_source_events_at(now + Duration::from_millis(100))
+            .unwrap();
+
+        assert_eq!(starts.get(), 3);
+        assert!(pipeline.source_active(lma_capture::macos::SourceKind::Microphone));
     }
 
     #[test]

@@ -18,6 +18,7 @@ pub fn capture_invoke_handler<R: Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) ->
 {
     tauri::generate_handler![
         commands::capture::capture_permissions,
+        commands::capture::open_capture_permission_settings,
         commands::capture::capture_devices,
         commands::capture::set_capture_devices,
         commands::capture::start_meeting,

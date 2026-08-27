@@ -130,6 +130,13 @@ impl CaptureBackend for VerticalBackend {
         Ok(self.permissions.clone())
     }
 
+    fn open_permission_settings(
+        &mut self,
+        _kind: app::commands::capture::CapturePermissionKind,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
     fn devices(&mut self) -> Result<Vec<CaptureDevice>, String> {
         Ok(Vec::new())
     }

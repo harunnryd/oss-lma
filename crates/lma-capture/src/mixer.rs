@@ -18,6 +18,7 @@ pub struct Mixer {
 
 impl Mixer {
     pub const TICK_FRAMES: usize = 4_800;
+    pub const MAX_BUFFERED_FRAMES: usize = 144_000;
 
     pub fn new() -> Self {
         Self {
@@ -34,7 +35,10 @@ impl Mixer {
             return Vec::new();
         }
 
-        self.buffer_mut(channel).extend(frames.iter().copied());
+        let buffer = self.buffer_mut(channel);
+        buffer.extend(frames.iter().copied());
+        let overflow = buffer.len().saturating_sub(Self::MAX_BUFFERED_FRAMES);
+        buffer.drain(..overflow);
         self.drain_chunks()
     }
 
@@ -187,5 +191,18 @@ mod tests {
         let chunks = mixer.push(SourceChannel::Microphone, &vec![-0.5; TICK_FRAMES]);
         assert_eq!(chunks.len(), 1);
         assert_eq!(samples(&chunks[0])[0..2], [16_384, -16_384]);
+    }
+
+    #[test]
+    fn stalled_peer_keeps_only_the_latest_three_seconds_for_alignment() {
+        let mut mixer = Mixer::new();
+        let mut system = vec![0.25; 48_000];
+        system.extend(vec![0.5; 144_000]);
+
+        assert!(mixer.push(SourceChannel::System, &system).is_empty());
+        let chunks = mixer.push(SourceChannel::Microphone, &vec![0.0; 144_000]);
+
+        assert_eq!(chunks.len(), 30);
+        assert_eq!(samples(&chunks[0])[0..2], [16_384, 0]);
     }
 }

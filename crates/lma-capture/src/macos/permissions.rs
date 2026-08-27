@@ -11,6 +11,29 @@ use cidre::{av, blocks, cg, ns};
 use crate::PermissionState;
 
 static SCREEN_REQUEST_DENIED: AtomicBool = AtomicBool::new(false);
+const SCREEN_REQUEST_DENIED_KEY: &str = "capture.screen-recording.request-denied";
+
+trait ScreenDenialHistory {
+    fn denied(&self) -> bool;
+    fn set_denied(&self, denied: bool);
+}
+
+#[derive(Clone, Copy)]
+struct NativeScreenDenialHistory;
+
+impl ScreenDenialHistory for NativeScreenDenialHistory {
+    fn denied(&self) -> bool {
+        let key = ns::String::with_str(SCREEN_REQUEST_DENIED_KEY);
+        SCREEN_REQUEST_DENIED.load(Ordering::Acquire)
+            || ns::UserDefaults::standard().get_u64(&key) == 1
+    }
+
+    fn set_denied(&self, denied: bool) {
+        SCREEN_REQUEST_DENIED.store(denied, Ordering::Release);
+        let key = ns::String::with_str(SCREEN_REQUEST_DENIED_KEY);
+        ns::UserDefaults::standard().set_u64(&key, u64::from(denied));
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PermissionKind {
@@ -37,9 +60,9 @@ pub struct NativePermissions;
 impl PermissionProvider for NativePermissions {
     fn status(&self, kind: PermissionKind) -> NativeAuthorization {
         match kind {
-            PermissionKind::ScreenRecording => screen_authorization(
+            PermissionKind::ScreenRecording => screen_authorization_with_history(
                 cg::screen_capture_access::preflight(),
-                SCREEN_REQUEST_DENIED.load(Ordering::Acquire),
+                &NativeScreenDenialHistory,
             ),
             PermissionKind::Microphone => {
                 let status =
@@ -60,7 +83,7 @@ impl PermissionProvider for NativePermissions {
         match kind {
             PermissionKind::ScreenRecording => {
                 let granted = cg::screen_capture_access::request();
-                SCREEN_REQUEST_DENIED.store(!granted, Ordering::Release);
+                remember_screen_request(granted, &NativeScreenDenialHistory);
                 Ok(if granted {
                     NativeAuthorization::Authorized
                 } else {
@@ -117,6 +140,20 @@ fn screen_authorization(
     } else {
         NativeAuthorization::NotDetermined
     }
+}
+
+fn screen_authorization_with_history(
+    preflight_granted: bool,
+    history: &impl ScreenDenialHistory,
+) -> NativeAuthorization {
+    if preflight_granted {
+        history.set_denied(false);
+    }
+    screen_authorization(preflight_granted, history.denied())
+}
+
+fn remember_screen_request(granted: bool, history: &impl ScreenDenialHistory) {
+    history.set_denied(!granted);
 }
 
 pub struct MacPermissions<P = NativePermissions> {
@@ -180,7 +217,10 @@ impl<P: PermissionProvider> MacPermissions<P> {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::RefCell, rc::Rc};
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
 
     use crate::PermissionState;
 
@@ -271,6 +311,38 @@ mod tests {
             super::screen_authorization(false, true),
             NativeAuthorization::Denied
         );
+    }
+
+    #[test]
+    fn screen_denial_history_survives_a_new_permission_adapter() {
+        #[derive(Clone)]
+        struct SharedHistory(Rc<Cell<bool>>);
+
+        impl super::ScreenDenialHistory for SharedHistory {
+            fn denied(&self) -> bool {
+                self.0.get()
+            }
+
+            fn set_denied(&self, denied: bool) {
+                self.0.set(denied);
+            }
+        }
+
+        let storage = Rc::new(Cell::new(false));
+        let first_launch = SharedHistory(storage.clone());
+        super::remember_screen_request(false, &first_launch);
+        let next_launch = SharedHistory(storage);
+
+        assert_eq!(
+            super::screen_authorization_with_history(false, &next_launch),
+            NativeAuthorization::Denied
+        );
+        super::remember_screen_request(true, &next_launch);
+        assert_eq!(
+            super::screen_authorization_with_history(true, &next_launch),
+            NativeAuthorization::Authorized
+        );
+        assert!(!super::ScreenDenialHistory::denied(&next_launch));
     }
 
     #[test]

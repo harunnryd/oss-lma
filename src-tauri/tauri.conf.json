@@ -1,0 +1,25 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "oss-lma",
+  "version": "0.1.0",
+  "identifier": "com.osslma.desktop",
+  "build": {},
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "oss-lma",
+        "width": 1200,
+        "height": 800
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app"],
+    "icon": ["icons/icon.png"],
+    "macOS": {
+      "minimumSystemVersion": "13.0"
+    }
+  }
+}

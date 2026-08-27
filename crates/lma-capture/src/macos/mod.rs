@@ -229,12 +229,7 @@ impl SourceHandle {
                 let _ = self.events.send(SourceEvent::Started(self.kind));
                 Ok(())
             }
-            Err(error) => {
-                let _ = self
-                    .events
-                    .send(SourceEvent::Error(self.kind, error.clone()));
-                Err(error)
-            }
+            Err(error) => Err(error),
         }
     }
 }
@@ -248,7 +243,7 @@ impl Drop for SourceHandle {
 #[cfg(test)]
 mod tests {
     use std::{
-        cell::RefCell,
+        cell::{Cell, RefCell},
         collections::VecDeque,
         rc::Rc,
         sync::{mpsc, mpsc::Sender, Arc},
@@ -584,5 +579,72 @@ mod tests {
             SourceEvent::Started(SourceKind::Microphone)
         );
         assert!(events_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn unavailable_replacement_stays_retryable_without_a_terminal_event() {
+        #[derive(Clone)]
+        struct UnavailableProvider {
+            attempts: Rc<Cell<usize>>,
+        }
+
+        impl NativeStreamProvider for UnavailableProvider {
+            fn start(
+                &self,
+                kind: SourceKind,
+                selection: &DeviceSelection,
+                frames: Sender<MonoFrames>,
+                events: Arc<dyn NativeStreamEvents>,
+            ) -> Result<Box<dyn NativeStream>, String> {
+                let attempt = self.attempts.get();
+                self.attempts.set(attempt + 1);
+                if attempt == 1 {
+                    Err("selected microphone is unavailable".into())
+                } else {
+                    FakeStreams {
+                        actions: Rc::new(RefCell::new(Vec::new())),
+                        observers: Rc::new(RefCell::new(Vec::new())),
+                        stop_results: stop_results([]),
+                    }
+                    .start(kind, selection, frames, events)
+                }
+            }
+        }
+
+        let attempts = Rc::new(Cell::new(0));
+        let (frames_tx, _frames_rx) = mpsc::channel();
+        let (events_tx, events_rx) = mpsc::channel();
+        let source = MacSource::with_provider(
+            SourceKind::Microphone,
+            UnavailableProvider {
+                attempts: attempts.clone(),
+            },
+            events_tx,
+        );
+        let mut handle = source.start(DeviceSelection::DeviceId("selected-mic".into()), frames_tx);
+        assert_eq!(
+            events_rx.recv().unwrap(),
+            SourceEvent::Started(SourceKind::Microphone)
+        );
+
+        assert_eq!(
+            handle
+                .rebuild(DeviceSelection::DeviceId("selected-mic".into()))
+                .unwrap_err(),
+            "selected microphone is unavailable"
+        );
+
+        assert!(!handle.is_active());
+        assert_eq!(
+            events_rx.recv().unwrap(),
+            SourceEvent::Stopped(SourceKind::Microphone)
+        );
+        assert!(events_rx.try_recv().is_err());
+
+        handle
+            .rebuild(DeviceSelection::DeviceId("selected-mic".into()))
+            .unwrap();
+        assert!(handle.is_active());
+        assert_eq!(attempts.get(), 3);
     }
 }
