@@ -1,0 +1,15 @@
+[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+lma-capture = { path = "../lma-capture" }
+lma-link = { path = "../lma-link" }
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2", default-features = false }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+uuid = { version = "1", features = ["v4"] }
+
+[lib]
+path = "src/lib.rs"
