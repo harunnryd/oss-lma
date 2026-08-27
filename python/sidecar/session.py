@@ -5,6 +5,7 @@ import time
 from collections.abc import Awaitable, Callable
 
 from lma_pipeline import SegmentAssembler
+from lma_stt.engine import SpeechEngine
 from lma_stt.types import MeetingContext, ProviderAuthError, ProviderResetError
 from websockets.exceptions import ConnectionClosed
 
@@ -38,7 +39,7 @@ class Session:
     def __init__(
         self,
         connection,
-        engine_factory,
+        engine_factory: Callable[[MeetingContext], SpeechEngine],
         *,
         db: PersistenceWriter | None = None,
         recorder: RecordingSink | None = None,
@@ -104,14 +105,16 @@ class Session:
             case End():
                 await self._close_session(drain=True)
             case AgentQuery():
-                await self._send({
-                    "EventType": "THINKING_STEP",
-                    "CallId": frame.call_id,
-                    "QueryId": frame.query_id,
-                    "Seq": 0,
-                    "StepType": "status",
-                    "Content": THINKING_STEP_STUB_CONTENT,
-                })
+                await self._send(
+                    {
+                        "EventType": "THINKING_STEP",
+                        "CallId": frame.call_id,
+                        "QueryId": frame.query_id,
+                        "Seq": 0,
+                        "StepType": "status",
+                        "Content": THINKING_STEP_STUB_CONTENT,
+                    }
+                )
             case VpCommand():
                 pass
             case _:
@@ -167,7 +170,12 @@ class Session:
             import os
             from pathlib import Path
 
-            base = Path(os.environ.get("LMA_RECORDING_DIR", str(Path.home() / "Library" / "Application Support" / "oss-lma" / "recordings")))
+            base = Path(
+                os.environ.get(
+                    "LMA_RECORDING_DIR",
+                    str(Path.home() / "Library" / "Application Support" / "oss-lma" / "recordings"),
+                )
+            )
             wav_path = base / frame.call_id / "audio.wav"
             wav_path.parent.mkdir(parents=True, exist_ok=True)
             self.recorder = WavRecordingSink(wav_path)
@@ -255,7 +263,9 @@ class Session:
                     )
                     return
                 except Exception:
-                    logger.exception("unexpected error while reconnecting for call %s", self.call_id)
+                    logger.exception(
+                        "unexpected error while reconnecting for call %s", self.call_id
+                    )
                     await self._send_safe(error_frame(self.call_id, "STT_STREAM_RESET"))
                     return
                 finally:
@@ -280,9 +290,7 @@ class Session:
             return None
         self.reconnect_state.record_failure(self._now_ms())
         backoff = self.reconnect_state.next_backoff_ms
-        await self._send(
-            error_frame(self.call_id, "STT_STREAM_RESET", {"attempt": consecutive})
-        )
+        await self._send(error_frame(self.call_id, "STT_STREAM_RESET", {"attempt": consecutive}))
         await self._sleep(backoff / 1000)
         try:
             new_stream = await self.engine_factory(self._ctx()).start(self._ctx())
