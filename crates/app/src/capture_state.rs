@@ -42,6 +42,7 @@ pub struct CaptureSnapshot {
 pub struct CaptureState {
     snapshot: CaptureSnapshot,
     generation: u64,
+    sidecar_available: bool,
 }
 
 impl Default for CaptureSnapshot {
@@ -154,6 +155,14 @@ impl CaptureState {
 
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    pub fn set_sidecar_available(&mut self, available: bool) {
+        self.sidecar_available = available;
+    }
+
+    pub fn sidecar_available(&self) -> bool {
+        self.sidecar_available
     }
 
     fn transition(&mut self, expected: CapturePhase, next: CapturePhase) -> Result<(), String> {

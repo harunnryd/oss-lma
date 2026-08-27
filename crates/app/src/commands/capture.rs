@@ -9,6 +9,7 @@ use tauri::{Emitter, Manager, Runtime};
 
 use crate::capture_state::{CaptureSnapshot, CaptureState, SourceReadiness};
 use crate::settings::{ProviderSettings, SettingsError};
+use crate::sidecar::SidecarSupervisor;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -135,10 +136,14 @@ pub struct AppCapture {
     selection: Mutex<CaptureDeviceSelection>,
     state: Arc<Mutex<CaptureState>>,
     emit_snapshot: SnapshotEmitter,
+    sidecar: Option<Arc<SidecarSupervisor>>,
 }
 
 impl AppCapture {
-    pub fn from_tauri<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<Self, String> {
+    pub(crate) fn from_tauri<R: Runtime>(
+        app: &tauri::AppHandle<R>,
+        sidecar: Arc<SidecarSupervisor>,
+    ) -> Result<Self, String> {
         let app_data_dir = app
             .path()
             .app_data_dir()
@@ -175,6 +180,7 @@ impl AppCapture {
             selection: Mutex::new(CaptureDeviceSelection::default()),
             state,
             emit_snapshot,
+            sidecar: Some(sidecar),
         })
     }
 
@@ -194,6 +200,7 @@ impl AppCapture {
             selection: Mutex::new(CaptureDeviceSelection::default()),
             state: Arc::new(Mutex::new(CaptureState::default())),
             emit_snapshot,
+            sidecar: None,
         }
     }
 
@@ -228,6 +235,21 @@ impl AppCapture {
 
     pub fn start(&self, options: LinkOptions) -> Result<CaptureSnapshot, String> {
         let _operation = self.operation.lock().unwrap();
+        let options = if let Some(sidecar) = &self.sidecar {
+            let endpoint = sidecar.endpoint();
+            self.state
+                .lock()
+                .unwrap()
+                .set_sidecar_available(endpoint.is_some());
+            let endpoint = endpoint.ok_or_else(|| "sidecar is unavailable".to_owned())?;
+            LinkOptions {
+                port: endpoint.port(),
+                token: endpoint.token().expose().to_owned(),
+                diarize_microphone: options.diarize_microphone,
+            }
+        } else {
+            options
+        };
         self.update_state(|state| state.begin_preflight().map(|_| ()))?;
         let generation = self.state.lock().unwrap().generation();
 
@@ -1370,6 +1392,7 @@ mod tests {
                 selection: Mutex::new(CaptureDeviceSelection::default()),
                 state,
                 emit_snapshot: Arc::new(|_| {}),
+                sidecar: None,
             },
             actions,
         )
