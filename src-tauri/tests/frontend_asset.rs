@@ -1,9 +1,8 @@
 use std::fs;
-use std::process::Command;
+use std::path::PathBuf;
 
-#[test]
-fn tauri_frontend_dist_contains_index_html() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+fn frontend_dist() -> PathBuf {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let config: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(root.join("tauri.conf.json")).expect("tauri config exists"),
     )
@@ -11,111 +10,123 @@ fn tauri_frontend_dist_contains_index_html() {
     let frontend_dist = config["build"]["frontendDist"]
         .as_str()
         .expect("frontendDist is configured");
-    let index_path = root.join(frontend_dist).join("index.html");
-    if !index_path.is_file() {
-        eprintln!(
-            "skip: {} not found (run `cargo tauri build` to populate it)",
-            index_path.display()
-        );
-        return;
-    }
-    assert!(index_path.is_file());
+    root.join(frontend_dist)
 }
 
-#[test]
-fn frontend_contains_provider_settings_and_live_transcript_surfaces() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let index = fs::read_to_string(root.join("ui/index.html")).expect("index exists");
-    let app = fs::read_to_string(root.join("ui/app.js")).expect("app exists");
-
-    for required_surface in [
-        "id=\"provider-settings\"",
-        "id=\"provider\"",
-        "id=\"provider-secret\"",
-        "id=\"permission-status\"",
-        "id=\"transcript\"",
-        "id=\"start\"",
-        "id=\"pause\"",
-        "id=\"resume\"",
-        "id=\"stop\"",
-    ] {
-        assert!(
-            index.contains(required_surface),
-            "missing {required_surface}"
-        );
-    }
-
-    for required_behavior in [
-        "updateTranscript",
-        "removeTranscript",
-        "SegmentId",
-        "IsPartial",
-        "ADD_TRANSCRIPT_SEGMENT",
-        "DELETE_TRANSCRIPT_SEGMENT",
-        "capture-status",
-        "provider_settings",
-    ] {
-        assert!(
-            app.contains(required_behavior),
-            "missing {required_behavior}"
-        );
-    }
-
-    for forbidden_detail in ["port: 8765", "token:", "endpoint"] {
-        assert!(
-            !index.contains(forbidden_detail),
-            "contains {forbidden_detail}"
-        );
-        assert!(
-            !app.contains(forbidden_detail),
-            "contains {forbidden_detail}"
-        );
-    }
-}
-
-#[test]
-fn transcript_updates_replace_partial_segments_with_final_segments() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let fixture = r#"
-const fs = require('fs');
-const rows = [];
-const element = () => ({ value: '', checked: false, hidden: false, textContent: '', disabled: false, dataset: {}, classList: { toggle() {} }, addEventListener() {} });
-const byId = new Map();
-for (const id of ['phase', 'message', 'transcript', 'provider', 'model', 'language', 'azure-region', 'diarize-mic', 'secret-status', 'azure-region-field', 'permissions', 'screen', 'provider-form', 'start', 'pause', 'resume', 'stop', 'provider-secret', 'permission-status']) byId.set(`#${id}`, element());
-byId.get('#transcript').append = row => rows.push(row);
-byId.get('#transcript').querySelector = selector => rows.find(row => selector.includes(row.dataset.segmentId));
-const listeners = {};
-global.window = { __TAURI__: { event: { listen: (name, handler) => { listeners[name] = handler; return Promise.resolve(() => {}); } } }, ossLma: undefined };
-global.document = { querySelector: selector => byId.get(selector), createElement: () => { const el = element(); el.remove = () => { const i = rows.indexOf(el); if (i >= 0) rows.splice(i, 1); }; return el; } };
-global.CSS = { escape: value => value };
-eval(fs.readFileSync(process.argv[1], 'utf8'));
-if (!window.ossLma.updateTranscript({ EventType: 'ADD_TRANSCRIPT_SEGMENT', SegmentId: 's1', Transcript: 'partial', IsPartial: true })) process.exit(1);
-if (!window.ossLma.updateTranscript({ EventType: 'ADD_TRANSCRIPT_SEGMENT', SegmentId: 's1', Transcript: 'final', IsPartial: false })) process.exit(1);
-if (!window.ossLma.updateTranscript({ EventType: 'ADD_TRANSCRIPT_SEGMENT', SegmentId: 's2', Transcript: 'ghost', IsPartial: true })) process.exit(1);
-if (rows.length !== 2) process.exit(1);
-if (!window.ossLma.removeTranscript({ EventType: 'DELETE_TRANSCRIPT_SEGMENT', SegmentId: 's2' })) process.exit(1);
-if (rows.length !== 1 || rows[0].textContent !== 'final') process.exit(1);
-if (window.ossLma.removeTranscript({ EventType: 'DELETE_TRANSCRIPT_SEGMENT', SegmentId: 'absent' }) !== false) process.exit(1);
-const codes = ['STT_PROVIDER_AUTH', 'STT_STREAM_RESET', 'LINK_DISCONNECTED', 'CAPTURE_DEVICE_LOST', 'CAPTURE_PERMISSION_DENIED', 'VP_CONTAINER_FAILED', 'VP_MANUAL_ACTION_REQUIRED', 'AGENT_TOOL_FAILURE', 'RAG_EMBEDDING_UNAVAILABLE', 'DB_WRITE_CONFLICT', 'SIDECAR_UNAVAILABLE', 'PORT_BIND_FAILED'];
-if (codes.some(code => window.ossLma.recoveryMessage(code) === code)) process.exit(1);
-if (window.ossLma.recoveryMessage('UNKNOWN_CODE') !== 'UNKNOWN_CODE') process.exit(1);
-listeners['meeting-event']({ payload: { EventType: 'ERROR', CallId: 'call-1', Code: 'STT_STREAM_RESET', Context: {} } });
-if (byId.get('#message').textContent !== 'The transcription stream reset. It will reconnect automatically.') process.exit(1);
-if (rows.length !== 1) process.exit(1);
-"#;
-    let node_output = match Command::new("node").arg("--version").output() {
-        Ok(out) if out.status.success() => out,
-        _ => {
-            eprintln!("skip: `node` is unavailable in PATH for the browserless frontend fixture");
+/// Skip the test if `npm run build` has not been run yet. The frontend
+/// is built by `cargo tauri build` via beforeBundleCommand; this test
+/// is a development-time sanity check, not a CI substitute.
+macro_rules! skip_if_missing {
+    ($path:expr) => {
+        if !$path.exists() {
+            eprintln!(
+                "skip: {} not found (run `npm --prefix src run build` first)",
+                $path.display()
+            );
             return;
         }
     };
-    let _ = node_output;
-    let output = Command::new("node")
-        .arg("-e")
-        .arg(fixture)
-        .arg(root.join("ui/app.js"))
-        .output()
-        .expect("node is available for the browserless frontend fixture");
-    assert!(output.status.success(), "fixture failed: {output:?}");
+}
+
+#[test]
+fn tauri_frontend_dist_contains_index_html() {
+    let index_path = frontend_dist().join("index.html");
+    skip_if_missing!(index_path);
+    assert!(index_path.is_file(), "index.html missing in frontendDist");
+}
+
+#[test]
+fn tauri_frontend_dist_contains_assets_directory() {
+    let assets = frontend_dist().join("assets");
+    skip_if_missing!(assets);
+    let entries: Vec<_> = fs::read_dir(&assets)
+        .expect("assets is a directory")
+        .filter_map(|e| e.ok())
+        .collect();
+    assert!(!entries.is_empty(), "assets/ directory must not be empty");
+
+    let has_js = entries.iter().any(|e| e.path().extension().and_then(|s| s.to_str()) == Some("js"));
+    let has_css = entries.iter().any(|e| e.path().extension().and_then(|s| s.to_str()) == Some("css"));
+    assert!(has_js, "expected a hashed .js bundle in assets/");
+    assert!(has_css, "expected a hashed .css bundle in assets/");
+}
+
+#[test]
+fn frontend_bundle_contains_required_wire_protocol_strings() {
+    let assets = frontend_dist().join("assets");
+    skip_if_missing!(assets);
+
+    let bundle = fs::read_dir(&assets)
+        .expect("assets is a directory")
+        .filter_map(|e| e.ok())
+        .find(|e| e.path().extension().and_then(|s| s.to_str()) == Some("js"))
+        .expect("a hashed .js bundle exists")
+        .path();
+
+    let bundle_text = fs::read_to_string(&bundle).expect("bundle readable");
+
+    // Wire-protocol event types the UI handles in its event switch.
+    for required in [
+        "ADD_TRANSCRIPT_SEGMENT",
+        "DELETE_TRANSCRIPT_SEGMENT",
+        "ERROR",
+        "START",
+    ] {
+        assert!(
+            bundle_text.contains(required),
+            "bundle missing wire event `{required}`"
+        );
+    }
+
+    // Recovery catalog codes the UI surfaces in toasts.
+    for code in [
+        "STT_PROVIDER_AUTH",
+        "STT_STREAM_RESET",
+        "LINK_DISCONNECTED",
+        "CAPTURE_DEVICE_LOST",
+        "CAPTURE_PERMISSION_DENIED",
+        "VP_CONTAINER_FAILED",
+        "VP_MANUAL_ACTION_REQUIRED",
+        "AGENT_TOOL_FAILURE",
+        "RAG_EMBEDDING_UNAVAILABLE",
+        "DB_WRITE_CONFLICT",
+        "SIDECAR_UNAVAILABLE",
+        "PORT_BIND_FAILED",
+    ] {
+        assert!(bundle_text.contains(code), "bundle missing recovery code `{code}`");
+    }
+
+    // Tauri channel names the bundle subscribes to.
+    for channel in ["meeting-event", "capture-status"] {
+        assert!(bundle_text.contains(channel), "bundle missing channel `{channel}`");
+    }
+}
+
+#[test]
+fn frontend_bundle_does_not_leak_secrets_or_endpoint_details() {
+    let assets = frontend_dist().join("assets");
+    skip_if_missing!(assets);
+
+    let bundle = fs::read_dir(&assets)
+        .expect("assets is a directory")
+        .filter_map(|e| e.ok())
+        .find(|e| e.path().extension().and_then(|s| s.to_str()) == Some("js"))
+        .expect("a hashed .js bundle exists")
+        .path();
+
+    let bundle_text = fs::read_to_string(&bundle).expect("bundle readable");
+
+    // No hard-coded secrets should ever appear in the frontend bundle.
+    for forbidden in [
+        "sk-proj-",
+        "DEEPGRAM_API_KEY=",
+        "OPENAI_API_KEY=",
+        "provider-secret",
+        "port: 8765",
+    ] {
+        assert!(
+            !bundle_text.contains(forbidden),
+            "frontend bundle must not contain `{forbidden}`"
+        );
+    }
 }

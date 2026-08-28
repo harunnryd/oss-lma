@@ -27,3 +27,22 @@ docs/superpowers/
 .DS_Store
 .idea/
 .vscode/
+
+# React/Vite frontend build output and tooling
+src/dist/
+src/node_modules/
+src/.vite/
+src/.eslintcache
+src/.parcel-cache/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Env files (never commit secrets — see .env.example at repo root)
+.env
+.env.local
+.env.*.local
