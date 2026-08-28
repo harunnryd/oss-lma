@@ -1,8 +1,10 @@
 pub mod capture_state;
+pub mod meetings;
 pub mod settings;
 pub(crate) mod sidecar;
 pub mod commands {
     pub mod capture;
+    pub mod meetings;
     pub mod settings;
 }
 
@@ -52,7 +54,11 @@ pub fn initialize_capture<R: Runtime>(app: &tauri::App<R>) -> Result<(), String>
         return Err("provider settings state has already been initialized".to_owned());
     }
     let capture = commands::capture::AppCapture::from_tauri(app.handle(), sidecar)?;
+    let meetings_state = commands::meetings::MeetingsState::from_tauri(app)?;
     if app.manage(capture) {
+        if !app.manage(meetings_state) {
+            return Err("meetings state has already been initialized".to_owned());
+        }
         Ok(())
     } else {
         Err("capture state has already been initialized".to_owned())
@@ -71,6 +77,9 @@ pub fn capture_invoke_handler<R: Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) ->
         commands::capture::resume_meeting,
         commands::capture::stop_meeting,
         commands::capture::capture_status,
+        commands::meetings::list_meetings,
+        commands::meetings::list_meeting_segments,
+        commands::meetings::delete_meeting,
         commands::settings::provider_settings,
         commands::settings::save_provider_settings,
     ]
