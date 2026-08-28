@@ -7,10 +7,19 @@ const PROVIDER_SETTINGS_KEY: &str = "stt.provider_settings";
 const KEYCHAIN_SERVICE: &str = "com.oss-lma.desktop";
 
 #[derive(Clone, Copy, Debug, Deserialize, Hash, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
+// Wire field values must match python/lma_stt/config.py's
+// ProviderKind values exactly: "deepgram", "assemblyAi", "azure".
+// serde's built-in case conventions (lowercase / camelCase / kebab-case)
+// cannot reproduce that mix, so each variant is renamed explicitly.
+// Without these aliases the sidecar exits 1 with "unknown STT provider"
+// on every spawn, the supervisor times out waiting for the readiness
+// line, and the whole Tauri app crashes via SIGABRT during setup.
 pub enum ProviderKind {
+    #[serde(rename = "deepgram")]
     Deepgram,
+    #[serde(rename = "assemblyAi")]
     AssemblyAi,
+    #[serde(rename = "azure")]
     Azure,
 }
 
@@ -456,5 +465,29 @@ mod tests {
             repository.load(),
             Err(super::SettingsError::InvalidSettings(_))
         ));
+    }
+
+    #[test]
+    fn provider_kind_serialises_lowercase_for_sidecar_wire() {
+        // The Python sidecar parses `provider` via ProviderKind.parse which
+        // accepts "deepgram" | "assemblyAi" | "azure". Rust must therefore
+        // serialise lowercase; anything else makes the sidecar exit 1
+        // with "unknown STT provider" and the supervisor times out, which
+        // crashes the whole Tauri app via SIGABRT during setup.
+        for (variant, expected) in [
+            (ProviderKind::Deepgram, "\"deepgram\""),
+            (ProviderKind::AssemblyAi, "\"assemblyAi\""),
+            (ProviderKind::Azure, "\"azure\""),
+        ] {
+            let payload = serde_json::to_string(&variant).expect("serialise");
+            assert!(
+                payload.contains(expected),
+                "expected payload to contain {expected}, got {payload}"
+            );
+            assert!(
+                !payload.contains("Deepgram") && !payload.contains("AssemblyAi") && !payload.contains("Azure"),
+                "serialised provider must not leak PascalCase variants: {payload}"
+            );
+        }
     }
 }
