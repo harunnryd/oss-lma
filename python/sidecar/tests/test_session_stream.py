@@ -45,25 +45,31 @@ async def make_session(results: list[dict], sampling_rate: int = 48000):
 
 async def test_start_builds_context_and_engine():
     _connection, engine, _ = await make_session([PARTIAL])
-    assert engine.started_with == [{
-        "call_id": CALL_ID,
-        "sample_rate": 48000,
-        "diarize": {"system": False, "mic": False},
-        "language_hints": [],
-    }]
+    assert engine.started_with == [
+        {
+            "call_id": CALL_ID,
+            "sample_rate": 48000,
+            "diarize": {"system": False, "mic": False},
+            "language_hints": [],
+        }
+    ]
 
 
 async def test_start_maps_diarization_flags():
     connection = MemoryConnection()
     engine = ScriptedEngine([])
     session = Session(connection, lambda ctx: engine)
-    await session.on_text(json.dumps({
-        "EventType": "START",
-        "CallId": CALL_ID,
-        "SamplingRate": 16000,
-        "DiarizeSystemChannel": True,
-        "DiarizeMicChannel": True,
-    }))
+    await session.on_text(
+        json.dumps(
+            {
+                "EventType": "START",
+                "CallId": CALL_ID,
+                "SamplingRate": 16000,
+                "DiarizeSystemChannel": True,
+                "DiarizeMicChannel": True,
+            }
+        )
+    )
     assert engine.started_with[0]["diarize"] == {"system": True, "mic": True}
 
 
@@ -86,12 +92,14 @@ async def test_wrong_size_audio_triggers_invalid_frame_policy():
     connection, _, session = await make_session([])
     await session.on_binary(bytes(100))
     await eventually(lambda: bool(connection.closes))
-    assert [json.loads(message) for message in connection.sent] == [{
-        "EventType": "ERROR",
-        "CallId": CALL_ID,
-        "Code": INVALID_FRAME_CODE,
-        "Context": INVALID_FRAME_CONTEXT,
-    }]
+    assert [json.loads(message) for message in connection.sent] == [
+        {
+            "EventType": "ERROR",
+            "CallId": CALL_ID,
+            "Code": INVALID_FRAME_CODE,
+            "Context": INVALID_FRAME_CONTEXT,
+        }
+    ]
     assert connection.closes == [(INVALID_FRAME_CLOSE_CODE, "invalid-frame")]
     assert connection.open is False
 
@@ -122,7 +130,9 @@ async def test_invalid_text_before_start_reports_empty_call_id():
 
 async def test_schema_violation_triggers_invalid_frame_policy():
     connection, _, session = await make_session([])
-    await session.on_text(json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 4000}))
+    await session.on_text(
+        json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 4000})
+    )
     await eventually(lambda: bool(connection.closes))
     assert connection.closes == [(1008, "invalid-frame")]
 
@@ -229,12 +239,14 @@ async def test_provider_side_chunk_size_mismatch_is_handled_gracefully():
     await session.on_text(start_message())
     await session.on_binary(bytes(19200))
     await eventually(lambda: bool(connection.closes))
-    assert [json.loads(message) for message in connection.sent] == [{
-        "EventType": "ERROR",
-        "CallId": CALL_ID,
-        "Code": INVALID_FRAME_CODE,
-        "Context": INVALID_FRAME_CONTEXT,
-    }]
+    assert [json.loads(message) for message in connection.sent] == [
+        {
+            "EventType": "ERROR",
+            "CallId": CALL_ID,
+            "Code": INVALID_FRAME_CODE,
+            "Context": INVALID_FRAME_CONTEXT,
+        }
+    ]
     assert connection.closes == [(INVALID_FRAME_CLOSE_CODE, "invalid-frame")]
 
 
@@ -272,10 +284,12 @@ async def test_provider_reset_during_pump_sends_error_frame_and_reconnects():
     session = Session(connection, lambda ctx: engine, sleep=lambda _s: asyncio.sleep(0))
     await session.on_text(start_message())
     await eventually(lambda: bool(connection.sent))
-    assert [json.loads(message) for message in connection.sent] == [{
-        "EventType": "ERROR",
-        "CallId": CALL_ID,
-        "Code": "STT_STREAM_RESET",
-        "Context": {"attempt": 1},
-    }]
+    assert [json.loads(message) for message in connection.sent] == [
+        {
+            "EventType": "ERROR",
+            "CallId": CALL_ID,
+            "Code": "STT_STREAM_RESET",
+            "Context": {"attempt": 1},
+        }
+    ]
     assert not session.pump_task.done()

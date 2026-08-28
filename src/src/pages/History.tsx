@@ -4,7 +4,7 @@ import { Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useDeleteMeeting, useMeetings } from '@/hooks/useTauriCommand';
-import { useToast } from '@/components/ui/toaster';
+import { useToast } from '@/components/ui/toast-context';
 import { formatDuration, formatRelativeTime } from '@/lib/utils';
 import { StatusBadge } from '@/components/layout/StatusBadge';
 import type { CapturePhase } from '@/lib/tauri';

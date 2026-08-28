@@ -47,7 +47,7 @@ Open read-only: both app processes hold write connections, and a read-write
 CLI session invites `DB_WRITE_CONFLICT`.
 
 ```bash
-DB="$HOME/Library/Application Support/oss-lma/lma.db"
+DB="$HOME/Library/Application Support/com.osslma.desktop/lma.db"
 ```
 
 ```powershell
@@ -111,10 +111,10 @@ nested executable does not authorize the bundle. Rebuilds with ad-hoc signing
 invalidate prior grants; install the development certificate to keep them
 stable.
 
-**Microphone blocked on either OS** — `CAPTURE_PERMISSION_DENIED`. On macOS
-the Microphone prompt was denied; on Windows, Settings → Privacy → Microphone
-has desktop-app access off. Re-enable, then reselect the device in Settings →
-Capture ([Capture permissions](prerequisites-and-install.md#capture-permissions)).
+**Microphone blocked** — `CAPTURE_PERMISSION_DENIED`. The macOS Microphone
+prompt was denied. Re-enable access in System Settings → Privacy & Security,
+then reselect the device in Settings → Capture
+([Capture permissions](prerequisites-and-install.md#capture-permissions)).
 
 **No microphone input after unplugging headset** — `CAPTURE_DEVICE_LOST`.
 Capture rebuilds the affected source on device-change events without ending

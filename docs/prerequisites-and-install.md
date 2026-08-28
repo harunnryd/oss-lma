@@ -4,18 +4,18 @@ title: "Prerequisites & Installation"
 
 # Prerequisites & Installation
 
-oss-lma runs **entirely on your machine**: audio capture, transcription calls,
-the assistant, storage, and recordings. There is no cloud backend to deploy
-and no account to create — you bring your own provider API keys.
+oss-lma runs its capture, sidecar, storage, and recordings on your machine.
+Audio is streamed directly to the configured cloud speech-to-text provider;
+there is no oss-lma cloud backend or account to create.
 
 ## System requirements
 
 | Requirement | Details |
 |---|---|
-| OS | macOS 13+ or Windows 10+ |
+| OS | macOS 13+; Windows capture is planned |
 | Python | 3.12+, managed by [uv](https://docs.astral.sh/uv/) |
 | Rust | stable toolchain via rustup |
-| Node | only for building the webview UI |
+| Node | 20+ with npm, for the webview UI |
 | Docker Desktop | only if you use the [Virtual Participant](virtual-participant.md); its containers dial the host sidecar over `host.docker.internal` |
 
 ## Capture permissions
@@ -35,9 +35,6 @@ build, grant **Microphone** and **Screen & System Audio Recording** to the
 bundled `oss-lma.app` in **System Settings → Privacy & Security**, then quit
 and relaunch that app. Do not grant the permissions only to Terminal, `cargo`,
 or the nested executable: that does not authorize the bundled app.
-
-**Windows** needs no permission for system-audio loopback — WASAPI provides
-it natively. The only gate is the microphone privacy setting.
 
 > During development, ad-hoc signing pins the macOS TCC identity per build;
 > rebuilds invalidate prior grants. Install a persistent self-signed
@@ -67,18 +64,25 @@ never in the database:
 | Key | Used by | Required |
 |---|---|---|
 | STT provider (Deepgram / AssemblyAI / Azure) | live transcription | yes, one |
-| LLM provider | assistant chat, summaries | yes, one |
+| LLM provider | assistant chat, summaries | no — future product increment |
 | Embedding provider | past-meeting search | no — local embeddings used by default |
 | Web search provider | assistant `web_search` tool | no |
 | TTS provider | [voice assistant](voice-assistant.md) | no |
+
+The current capture release requires only one STT provider key.
 
 ## Build from source
 
 ```bash
 git clone <repo-url> oss-lma && cd oss-lma
-uv sync             # python workspace: sidecar + lma_* packages
-cargo tauri dev     # builds the shell, spawns the sidecar, opens the window
+uv sync --all-packages
+npm --prefix src ci
+cargo tauri dev
 ```
+
+`cargo tauri dev` starts the Vite webview server and runs the sidecar through
+the uv-managed Python environment. It does not depend on whichever `python3`
+happens to be first on the system `PATH`.
 
 Production builds package the Python workspace into a bundled environment
 next to the Rust binary — no system Python is required at runtime.
@@ -96,9 +100,9 @@ explains how to gather state for each surface.
    `<app-data>/logs/` for a sidecar crash or port-bind failure
    ([Troubleshooting → Sidecar lifecycle](troubleshooting.md#sidecar-lifecycle)).
 
-2. **Providers configured** — Settings → Providers: pick an STT provider and
-   an LLM provider, paste API keys.
-   *Expected:* both save without error into the OS keychain.
+2. **Provider configured** — Settings → Providers: pick an STT provider and
+   paste its API key.
+   *Expected:* it saves without error into the OS keychain.
    *If it fails:* keychain prompt denied → re-grant and re-save;
    `STT_PROVIDER_AUTH` on step 4 → re-paste the key and confirm the account
    has streaming entitlements.
@@ -119,12 +123,8 @@ explains how to gather state for each surface.
    `<app-data>/recordings/<meeting_id>/audio.wav` (for example, on macOS):
 
    ```bash
-   find ~/Library/Application\ Support/oss-lma/recordings \\
+   find ~/Library/Application\ Support/com.osslma.desktop/recordings \\
      -path '*/audio.wav' -type f -print
-   ```
-
-   ```powershell
-   Get-ChildItem "$env:APPDATA\oss-lma\recordings"             # Windows
    ```
 
    *If it fails:* meeting created but no transcript → STT provider issue
@@ -140,22 +140,13 @@ explains how to gather state for each surface.
    review [Troubleshooting → Capture](troubleshooting.md#capture) for
    `CAPTURE_DEVICE_LOST`.
 
-6. **Assistant answers one question** — open the chat panel on that meeting
-   and ask "What did we talk about?".
-   *Expected:* a streamed answer referencing the sentence you spoke, with a
-   thinking-step timeline.
-   *If it fails:* `AGENT_TOOL_FAILURE` steps or an empty reply point at the
-   LLM key or model selection
-   ([Troubleshooting → Assistant](troubleshooting.md#assistant)).
-
 ## Logs and data locations
 
 Everything lives under the per-user application-data directory:
 
 | OS | Base path (`<app-data>`) |
 |---|---|
-| macOS | `~/Library/Application Support/oss-lma/` |
-| Windows | `%APPDATA%\oss-lma\` |
+| macOS | `~/Library/Application Support/com.osslma.desktop/` |
 
 ```text
 <app-data>/

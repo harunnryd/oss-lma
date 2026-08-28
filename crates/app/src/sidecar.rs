@@ -1,7 +1,8 @@
 use std::{
+    ffi::OsString,
     fmt,
     io::{BufRead, BufReader, Read, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{mpsc, Mutex},
     thread,
@@ -61,6 +62,7 @@ pub(crate) struct SidecarCommand {
     program: String,
     args: Vec<String>,
     pythonpath: Option<Vec<PathBuf>>,
+    env: Vec<(OsString, OsString)>,
 }
 
 impl SidecarCommand {
@@ -69,7 +71,7 @@ impl SidecarCommand {
             let python_resources = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../python");
             return Self {
                 pythonpath: Some(python_paths(python_resources)),
-                ..Self::new("python3", ["-m", "sidecar"])
+                ..Self::new("uv", ["run", "python", "-m", "sidecar"])
             };
         }
         let sidecar = std::env::current_exe()
@@ -97,7 +99,19 @@ impl SidecarCommand {
             program: program.into(),
             args: args.into_iter().map(Into::into).collect(),
             pythonpath: None,
+            env: Vec::new(),
         }
+    }
+
+    pub(crate) fn for_app_data_dir(app_data_dir: &Path) -> Self {
+        Self::bundled()
+            .with_env("LMA_DB_PATH", app_data_dir.join("lma.db"))
+            .with_env("LMA_RECORDING_DIR", app_data_dir.join("recordings"))
+    }
+
+    fn with_env(mut self, key: impl Into<OsString>, value: impl Into<OsString>) -> Self {
+        self.env.push((key.into(), value.into()));
+        self
     }
 
     fn start(&self) -> Result<Child, SupervisorError> {
@@ -112,6 +126,9 @@ impl SidecarCommand {
                 SupervisorError::Spawn(std::io::Error::new(std::io::ErrorKind::InvalidInput, error))
             })?;
             command.env("PYTHONPATH", pythonpath);
+        }
+        for (key, value) in &self.env {
+            command.env(key, value);
         }
         command.spawn().map_err(SupervisorError::Spawn)
     }
@@ -165,9 +182,9 @@ impl fmt::Display for SupervisorError {
                 formatter.write_str("sidecar did not become ready before startup timed out")
             }
             Self::Shutdown(error) => write!(formatter, "sidecar could not stop: {error}"),
-            Self::RespawnLimitExceeded => formatter.write_str(
-                "sidecar respawn limit exceeded; manual restart required",
-            ),
+            Self::RespawnLimitExceeded => {
+                formatter.write_str("sidecar respawn limit exceeded; manual restart required")
+            }
         }
     }
 }
@@ -205,8 +222,6 @@ impl SidecarSupervisor {
     }
 
     pub(crate) fn spawn(&self, config: RuntimeConfig) -> Result<SidecarEndpoint, SupervisorError> {
-        // Step 1: honor any backoff window before claiming the lock so
-        // shutdown can still proceed during the sleep.
         let backoff_target = {
             let state = self.state.lock().unwrap();
             state.next_respawn_at
@@ -217,14 +232,9 @@ impl SidecarSupervisor {
             }
         }
 
-        // Step 2: hold the lock through the spawn so two concurrent
-        // callers cannot both observe an empty endpoint and race to
-        // replace each other's freshly spawned children.
         let mut state = self.state.lock().unwrap();
         let result = self.spawn_into_locked(&mut state, config);
 
-        // Step 3: every spawn attempt counts toward the cap so a
-        // successful-but-immediately-exiting child cannot loop forever.
         let now = Instant::now();
         match state.first_respawn_at {
             Some(first) if now.duration_since(first) <= RESPAWN_WINDOW => {
@@ -239,8 +249,6 @@ impl SidecarSupervisor {
         if let Err(ref error) = result {
             state.last_error = Some(format!("{error}"));
         }
-        // Cap applies only when this attempt itself failed; a healthy
-        // respawn resets nothing and still counts.
         if state.respawn_count > RESPAWN_CAP && result.is_err() {
             return Err(SupervisorError::RespawnLimitExceeded);
         }
@@ -266,8 +274,6 @@ impl SidecarSupervisor {
             }
         };
 
-        // Caller holds the lock, so no other thread can race the
-        // previous-child takeover.
         if let Some(mut previous) = state.child.take() {
             terminate(&mut previous);
         }
@@ -279,8 +285,6 @@ impl SidecarSupervisor {
     }
 
     pub(crate) fn endpoint(&self) -> Option<SidecarEndpoint> {
-        // Hold the lock through the entire respawn so concurrent
-        // callers cannot race the spawn_into_locked takeover.
         let mut state = self.state.lock().unwrap();
         let exited = state
             .child
@@ -293,9 +297,6 @@ impl SidecarSupervisor {
         if state.endpoint.is_some() {
             return state.endpoint.clone();
         }
-        // Cap pre-check: refuse to trigger another automatic respawn
-        // when we have already burned through RESPAWN_CAP attempts
-        // inside the recent window.
         if state.respawn_count > RESPAWN_CAP {
             return None;
         }
@@ -331,8 +332,6 @@ impl SidecarSupervisor {
         let mut state = self.state.lock().unwrap();
         state.endpoint = None;
         state.config = None;
-        // Intentional shutdown: clear the respawn counter so a future
-        // explicit respawn() does not inherit a near-cap state.
         state.respawn_count = 0;
         state.first_respawn_at = None;
         state.next_respawn_at = None;
@@ -415,32 +414,16 @@ impl<'a> From<&'a RuntimeConfig> for RuntimeConfigPayload<'a> {
 fn read_readiness(
     stdout: Option<std::process::ChildStdout>,
 ) -> Result<SidecarEndpoint, SupervisorError> {
-    // The sidecar stays alive after printing the readiness line (it
-    // awaits the supervisor's stop event), so reading until EOF would
-    // block forever. read_with_timeout reads exactly one line within
-    // STARTUP_TIMEOUT — anything more than that is junk we don't care
-    // about yet.
     let stdout = stdout.ok_or(SupervisorError::InvalidReadiness)?;
     let mut line = String::new();
     read_with_timeout(stdout, &mut line)?;
     parse_readiness(&line).ok_or(SupervisorError::InvalidReadiness)
 }
 
-/// Reads bytes from `stream` into `buf` until either `buf` ends with a
-/// newline (in which case everything up to and including the newline
-/// is returned) or STARTUP_TIMEOUT elapses. Returns the number of bytes
-/// read on success, or `Err(StartupTimeout)` if the deadline passed
-/// before a full line arrived.
 fn read_with_timeout<R: Read + Send + 'static>(
     stream: R,
     buf: &mut String,
 ) -> Result<(), SupervisorError> {
-    // The sidecar stays alive after printing the readiness line (it
-    // awaits the supervisor stop event), so any approach that reads
-    // until EOF hangs forever. Run a blocking read_line in a worker
-    // thread with a timeout receiver: as soon as a full line lands we
-    // return; if no line arrives within STARTUP_TIMEOUT we hand the
-    // caller StartupTimeout.
     let (sender, receiver) = mpsc::sync_channel(1);
     thread::spawn(move || {
         let mut reader = BufReader::new(stream);
@@ -458,7 +441,6 @@ fn read_with_timeout<R: Read + Send + 'static>(
         Err(mpsc::RecvTimeoutError::Disconnected) => Err(SupervisorError::InvalidReadiness),
     }
 }
-
 
 fn parse_readiness(line: &str) -> Option<SidecarEndpoint> {
     let mut fields = line.split_whitespace();
@@ -494,7 +476,7 @@ fn terminate(child: &mut Child) {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{path::PathBuf, time::Duration};
 
     use super::{RuntimeConfig, SecretString, SidecarCommand, SidecarSupervisor, SupervisorError};
     use crate::settings::ProviderKind;
@@ -512,6 +494,8 @@ mod tests {
     #[test]
     fn bundled_command_points_python_to_packaged_resources() {
         let command = SidecarCommand::bundled();
+        assert_eq!(command.program, "uv");
+        assert_eq!(command.args, ["run", "python", "-m", "sidecar"]);
         let pythonpaths = command
             .pythonpath
             .expect("bundled sidecar has Python resources");
@@ -519,6 +503,18 @@ mod tests {
         assert!(pythonpaths[0].ends_with("python"));
         assert!(pythonpaths[1].ends_with("python/lma_stt"));
         assert!(pythonpaths[2].ends_with("python/lma_pipeline"));
+    }
+
+    #[test]
+    fn app_data_command_keeps_sidecar_storage_with_the_shell() {
+        let app_data_dir = PathBuf::from("/tmp/oss-lma-app-data");
+        let command = SidecarCommand::for_app_data_dir(&app_data_dir);
+        assert!(command.env.iter().any(|(key, value)| {
+            key == "LMA_DB_PATH" && value == "/tmp/oss-lma-app-data/lma.db"
+        }));
+        assert!(command.env.iter().any(|(key, value)| {
+            key == "LMA_RECORDING_DIR" && value == "/tmp/oss-lma-app-data/recordings"
+        }));
     }
 
     fn shell(script: &str) -> SidecarCommand {
@@ -586,21 +582,19 @@ mod tests {
         supervisor.shutdown().unwrap();
     }
 
-    
-    
     #[test]
     fn endpoint_caps_respawn_attempts_after_repeated_failures() {
-        // Shell exits 0 immediately after the ready line, so every
-        // subsequent endpoint() call would otherwise respawn forever.
         let supervisor = SidecarSupervisor::with_command(shell(
             "printf 'SIDECAR_READY port=43123 token=abc123\n'; exit 0",
         ));
         supervisor.spawn(config("provider-secret")).unwrap();
 
-        // 5 respawn attempts allowed; the 6th must be capped.
         for _ in 0..5 {
             std::thread::sleep(Duration::from_millis(20));
-            assert!(supervisor.endpoint().is_some(), "first five attempts succeed");
+            assert!(
+                supervisor.endpoint().is_some(),
+                "first five attempts succeed"
+            );
         }
         std::thread::sleep(Duration::from_millis(20));
         assert!(
@@ -625,7 +619,6 @@ mod tests {
 
         supervisor.shutdown().unwrap();
 
-        // After shutdown we should be able to spawn again from scratch.
         let endpoint = supervisor.spawn(config("fresh-secret")).unwrap();
         assert_eq!(endpoint.port(), 43123);
         supervisor.shutdown().unwrap();
@@ -633,12 +626,8 @@ mod tests {
 
     #[test]
     fn spawn_rejects_when_cap_reached() {
-        // Child that exits before printing readiness; spawn() will fail
-        // with StartupTimeout or InvalidReadiness, and the cap accounting
-        // still applies so we can prove the fast-fail path.
-        let supervisor = SidecarSupervisor::with_command(shell(
-            "printf 'unrelated output\n'; exit 1",
-        ));
+        let supervisor =
+            SidecarSupervisor::with_command(shell("printf 'unrelated output\n'; exit 1"));
         for _ in 0..5 {
             let _ = supervisor.spawn(config("provider-secret"));
         }

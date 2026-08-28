@@ -3,8 +3,10 @@
 ## Setup
 
 ```bash
-uv sync            # python workspace
-cargo build        # rust workspace
+uv sync --all-packages
+npm --prefix src ci
+npm --prefix src run build
+cargo build
 uv run pre-commit install --hook-type pre-commit --hook-type pre-push
 ```
 
@@ -26,6 +28,6 @@ the full Python test suite.
 
 ## Pull requests
 
-1. Tests green across both languages (`pytest`, `cargo test`)
+1. Tests green across every stack (`pytest`, `cargo test`, `npm test`)
 2. Contract schemas validated on both sides
 3. Docs updated when behavior described in `docs/` changes

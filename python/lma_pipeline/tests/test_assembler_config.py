@@ -21,9 +21,7 @@ def test_config_is_frozen():
 
 def test_empty_result_emits_nothing():
     assembler = SegmentAssembler("call-1")
-    out = assembler.on_result(
-        Result(result_id="r1", channel="CALLER", is_partial=True, items=[])
-    )
+    out = assembler.on_result(Result(result_id="r1", channel="CALLER", is_partial=True, items=[]))
     assert out == []
 
 

@@ -1,2 +1,4 @@
 def test_storage_package_is_importable():
-    import sidecar.storage  # noqa: F401
+    from sidecar import storage
+
+    assert storage.__package__ == "sidecar.storage"

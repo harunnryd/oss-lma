@@ -4,15 +4,14 @@ import { ShieldAlert, ShieldCheck, ShieldQuestion } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { usePermissions } from '@/hooks/useTauriCommand';
-import { openCapturePermissionSettings } from '@/lib/tauri';
-import { useToast } from '@/components/ui/toaster';
+import { openCapturePermissionSettings, requestCapturePermission } from '@/lib/tauri';
+import { useToast } from '@/components/ui/toast-context';
 import { cn } from '@/lib/utils';
 
 export function PermissionGate() {
   const { data, refetch } = usePermissions();
   const { push } = useToast();
 
-  // Re-query after returning from the system settings pane.
   useEffect(() => {
     function onFocus() {
       refetch();
@@ -21,12 +20,26 @@ export function PermissionGate() {
     return () => window.removeEventListener('focus', onFocus);
   }, [refetch]);
 
-  async function open(kind: 'microphone' | 'screenRecording') {
+  async function handle(
+    kind: 'microphone' | 'screenRecording',
+    status: 'Unknown' | 'Denied' | 'Granted',
+  ) {
     try {
-      await openCapturePermissionSettings(kind);
-      push({ title: 'Opening System Settings…', description: 'Grant access, then return to the app.' });
+      if (status === 'Unknown') {
+        const requestedStatus = await requestCapturePermission(kind);
+        await refetch();
+        if (requestedStatus === 'Granted') {
+          push({ title: 'Permission granted', description: 'Capture access is ready.' });
+        } else {
+          await openCapturePermissionSettings(kind);
+          push({ title: 'Permission needed', description: 'Grant access in System Settings, then return here.' });
+        }
+      } else {
+        await openCapturePermissionSettings(kind);
+        push({ title: 'Opening System Settings…', description: 'Grant access, then return to the app.' });
+      }
     } catch (error) {
-      push({ title: 'Could not open settings', description: String(error), variant: 'destructive' });
+      push({ title: 'Could not update permission', description: String(error), variant: 'destructive' });
     }
   }
 
@@ -52,12 +65,12 @@ export function PermissionGate() {
         <PermissionRow
           label="Microphone"
           status={data.microphone}
-          onClick={() => open('microphone')}
+          onClick={() => handle('microphone', data.microphone)}
         />
         <PermissionRow
           label="Screen recording"
           status={data.screenRecording}
-          onClick={() => open('screenRecording')}
+          onClick={() => handle('screenRecording', data.screenRecording)}
         />
       </CardContent>
     </Card>
@@ -87,8 +100,13 @@ function PermissionRow({
           </span>
         </div>
       </div>
-      <Button variant="secondary" size="sm" onClick={onClick}>
-        Open settings
+      <Button
+        variant="secondary"
+        size="sm"
+        aria-label={`${status === 'Unknown' ? 'Request access' : 'Open settings'} for ${label}`}
+        onClick={onClick}
+      >
+        {status === 'Unknown' ? 'Request access' : 'Open settings'}
       </Button>
     </div>
   );

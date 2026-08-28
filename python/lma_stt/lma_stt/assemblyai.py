@@ -3,7 +3,7 @@ import json
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import websockets
 
@@ -31,7 +31,9 @@ def _result_id(begin_id: str, message: dict[str, Any]) -> str:
     return f"{begin_id}-turn-{message['turn_order']}"
 
 
-def map_message(message: dict[str, Any], *, begin_id: str, channel: str) -> Result:
+def map_message(
+    message: dict[str, Any], *, begin_id: str, channel: Literal["CALLER", "AGENT"]
+) -> Result:
     result_id = _result_id(begin_id, message)
     items = []
     for word in message.get("words", []):
@@ -44,7 +46,7 @@ def map_message(message: dict[str, Any], *, begin_id: str, channel: str) -> Resu
                 start_time=float(word.get("start", word.get("start_time", 0))) / 1000,
                 end_time=float(word.get("end", word.get("end_time", 0))) / 1000,
                 speaker=None if speaker is None else f"spk_{speaker}",
-                channel=channel,  # type: ignore[arg-type]
+                channel=channel,
                 result_id=result_id,
             )
         )
@@ -55,7 +57,9 @@ def map_message(message: dict[str, Any], *, begin_id: str, channel: str) -> Resu
     }
 
 
-def map_messages(messages: list[dict[str, Any]], *, channel: str = "CALLER") -> list[Result]:
+def map_messages(
+    messages: list[dict[str, Any]], *, channel: Literal["CALLER", "AGENT"] = "CALLER"
+) -> list[Result]:
     begin_id = "unknown"
     results = []
     for message in messages:

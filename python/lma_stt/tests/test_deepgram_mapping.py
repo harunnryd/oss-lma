@@ -42,6 +42,33 @@ def test_result_id_stable_across_partial_and_final():
     assert agent_final["result_id"] == "req-mini-1-2"
 
 
+def test_maps_live_result_without_a_metadata_sequence():
+    message = {
+        "type": "Results",
+        "channel_index": [0, 2],
+        "is_final": False,
+        "start": 1.25,
+        "metadata": {"request_id": "req-live"},
+        "channel": {
+            "alternatives": [
+                {
+                    "words": [
+                        {
+                            "word": "hello",
+                            "start": 1.25,
+                            "end": 1.5,
+                        }
+                    ]
+                }
+            ]
+        },
+    }
+
+    result = map_message(message)
+
+    assert result["result_id"] == "req-live-0-1250"
+
+
 def test_transport_exhaustion_without_close_is_a_reset():
     conn = FakeTransport()
 

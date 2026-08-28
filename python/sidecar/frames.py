@@ -147,7 +147,6 @@ def error_frame(call_id: str, code: str, context: dict | None = None) -> dict:
 
 
 def delete_segment_frame(call_id: str, segment_id: str, reason: str = "STALE_PARTIAL") -> dict:
-    """Build a DELETE_TRANSCRIPT_SEGMENT event for stale-partial eviction."""
     return {
         "EventType": "DELETE_TRANSCRIPT_SEGMENT",
         "CallId": call_id,

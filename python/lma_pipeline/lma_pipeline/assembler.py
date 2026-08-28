@@ -57,8 +57,11 @@ class SegmentAssembler:
     def on_result(self, result: Result) -> list[dict]:
         if not result["items"]:
             return []
-        channel = (result.get("channel") if result.get("channel") is not None
-                   else result["items"][0].channel)
+        channel = (
+            result.get("channel")
+            if result.get("channel") is not None
+            else result["items"][0].channel
+        )
         result = {**result, "channel": channel}
         state = self._state(channel)
         if any(item.speaker is not None for item in result["items"]):
@@ -68,7 +71,8 @@ class SegmentAssembler:
             state["origin"] = None
             state["settled_emitted"] = 0
         use_fallback = not state["diarized"] and (
-            state["pending_speaker"] is not None or bool(state["timeline"]))
+            state["pending_speaker"] is not None or bool(state["timeline"])
+        )
         if use_fallback:
             return self._emit_active_speaker(result, state)
         return self._emit_diarized(result, state)
@@ -102,8 +106,7 @@ class SegmentAssembler:
             speaker, start = name, entry_start
         return speaker, start
 
-    def _snapshot(self, state: dict, segment_id: str, channel: str,
-                  is_partial: bool) -> dict:
+    def _snapshot(self, state: dict, segment_id: str, channel: str, is_partial: bool) -> dict:
         entry = state["open"][segment_id]
         event = {
             "EventType": "ADD_TRANSCRIPT_SEGMENT",
@@ -127,20 +130,25 @@ class SegmentAssembler:
             segment_id = f"{speaker}-{round(start * 1000)}-{result['channel']}"
             entry = state["open"].get(segment_id)
             if entry is None:
-                state["open"][segment_id] = {"speaker": speaker, "start": start,
-                                             "end": item.end_time,
-                                             "items": [item]}
+                state["open"][segment_id] = {
+                    "speaker": speaker,
+                    "start": start,
+                    "end": item.end_time,
+                    "items": [item],
+                }
             elif item not in entry["items"]:
                 entry["items"].append(item)
                 entry["end"] = item.end_time
             if segment_id not in touched:
                 touched.append(segment_id)
-        return [self._snapshot(state, segment_id, result["channel"],
-                               result["is_partial"])
-                for segment_id in touched]
+        return [
+            self._snapshot(state, segment_id, result["channel"], result["is_partial"])
+            for segment_id in touched
+        ]
 
-    def _select(self, windows: list[dict], is_partial: bool,
-                settled_emitted: int) -> tuple[list[dict], int]:
+    def _select(
+        self, windows: list[dict], is_partial: bool, settled_emitted: int
+    ) -> tuple[list[dict], int]:
         if not is_partial:
             return windows, settled_emitted
         emit = [w for w in windows if w["index"] >= settled_emitted]
@@ -150,14 +158,17 @@ class SegmentAssembler:
         below = sum(1 for w in emit if w["index"] < highest)
         return emit, settled_emitted + below
 
-    def _build_windows(self, items: list[WordItem], is_final: bool,
-                       origin: float) -> list[dict]:
+    def _build_windows(self, items: list[WordItem], is_final: bool, origin: float) -> list[dict]:
         buckets = self._buckets(items, origin)
         highest = buckets[-1][0]
-        return [{"index": index,
-                 "runs": self._absorb(self._runs(bucket)),
-                 "settled": is_final or index < highest}
-                for index, bucket in buckets]
+        return [
+            {
+                "index": index,
+                "runs": self._absorb(self._runs(bucket)),
+                "settled": is_final or index < highest,
+            }
+            for index, bucket in buckets
+        ]
 
     def _transcript(self, items: list[WordItem]) -> str:
         text = ""
@@ -170,15 +181,15 @@ class SegmentAssembler:
     def _emit_diarized(self, result: Result, state: dict) -> list[dict]:
         if state["origin"] is None:
             state["origin"] = self._origin(result["items"])
-        windows = self._build_windows(result["items"], not result["is_partial"],
-                                      state["origin"])
+        windows = self._build_windows(result["items"], not result["is_partial"], state["origin"])
         if result["is_partial"] and state.get("first_partial", True):
             emit = [windows[0]] if windows else []
             state["first_partial"] = False
             state["settled_emitted"] = state["settled_emitted"]
         else:
             emit, state["settled_emitted"] = self._select(
-                windows, result["is_partial"], state["settled_emitted"])
+                windows, result["is_partial"], state["settled_emitted"]
+            )
             if not result["is_partial"]:
                 state["first_partial"] = False
         out: list[dict] = []
@@ -193,8 +204,10 @@ class SegmentAssembler:
                     event = {
                         "EventType": "ADD_TRANSCRIPT_SEGMENT",
                         "CallId": self.call_id,
-                        "SegmentId": (f"{result['result_id']}-{result['channel']}"
-                                      f"-w{window['index']}-r{position}"),
+                        "SegmentId": (
+                            f"{result['result_id']}-{result['channel']}"
+                            f"-w{window['index']}-r{position}"
+                        ),
                         "Channel": result["channel"],
                         "StartTime": run["start"],
                         "EndTime": run["end"],
@@ -231,16 +244,14 @@ class SegmentAssembler:
                     current["label"] = label
                     current["items"].append(item)
                     continue
-            runs.append({"label": label, "items": [item], "words": 0,
-                         "start": 0.0, "end": 0.0})
+            runs.append({"label": label, "items": [item], "words": 0, "start": 0.0, "end": 0.0})
         for run in runs:
             self._refresh(run)
         return runs
 
     def _weak(self, run: dict) -> bool:
         duration = run["end"] - run["start"]
-        return (run["words"] < self.config.min_run_words
-                or duration < self.config.min_run_seconds)
+        return run["words"] < self.config.min_run_words or duration < self.config.min_run_seconds
 
     def _absorb(self, runs: list[dict]) -> list[dict]:
         if len(runs) <= 1:

@@ -119,6 +119,10 @@ pub struct LevelMeters {
 
 pub trait CaptureBackend: Send {
     fn permissions(&mut self) -> Result<PermissionSnapshot, String>;
+    fn request_permission(
+        &mut self,
+        kind: CapturePermissionKind,
+    ) -> Result<PermissionStatus, String>;
     fn open_permission_settings(&mut self, kind: CapturePermissionKind) -> Result<(), String>;
     fn devices(&mut self) -> Result<Vec<CaptureDevice>, String>;
     fn start_sources(
@@ -226,6 +230,13 @@ impl AppCapture {
 
     pub fn permissions(&self) -> Result<PermissionSnapshot, String> {
         self.backend.lock().unwrap().permissions()
+    }
+
+    pub fn request_permission(
+        &self,
+        kind: CapturePermissionKind,
+    ) -> Result<PermissionStatus, String> {
+        self.backend.lock().unwrap().request_permission(kind)
     }
 
     pub fn open_permission_settings(&self, kind: CapturePermissionKind) -> Result<(), String> {
@@ -588,6 +599,10 @@ struct NativeCaptureBackend {
 #[cfg(target_os = "macos")]
 enum NativeCommand {
     Permissions(std::sync::mpsc::SyncSender<Result<PermissionSnapshot, String>>),
+    RequestPermission(
+        CapturePermissionKind,
+        std::sync::mpsc::SyncSender<Result<PermissionStatus, String>>,
+    ),
     OpenPermissionSettings(
         CapturePermissionKind,
         std::sync::mpsc::SyncSender<Result<(), String>>,
@@ -659,6 +674,13 @@ impl Drop for NativeCaptureBackend {
 impl CaptureBackend for NativeCaptureBackend {
     fn permissions(&mut self) -> Result<PermissionSnapshot, String> {
         self.request(NativeCommand::Permissions)
+    }
+
+    fn request_permission(
+        &mut self,
+        kind: CapturePermissionKind,
+    ) -> Result<PermissionStatus, String> {
+        self.request(|reply| NativeCommand::RequestPermission(kind, reply))
     }
 
     fn open_permission_settings(&mut self, kind: CapturePermissionKind) -> Result<(), String> {
@@ -965,6 +987,17 @@ impl NativeWorker {
                     ),
                 }));
             }
+            NativeCommand::RequestPermission(kind, reply) => {
+                let permission = match kind {
+                    CapturePermissionKind::ScreenRecording => {
+                        lma_capture::macos::MacPermissions::screen_recording()
+                    }
+                    CapturePermissionKind::Microphone => {
+                        lma_capture::macos::MacPermissions::microphone()
+                    }
+                };
+                let _ = reply.send(permission.request_access().map(permission_status));
+            }
             NativeCommand::OpenPermissionSettings(kind, reply) => {
                 let permission = match kind {
                     CapturePermissionKind::ScreenRecording => {
@@ -1243,6 +1276,13 @@ impl CaptureBackend for NativeCaptureBackend {
         Err("native capture is supported on macOS only".to_owned())
     }
 
+    fn request_permission(
+        &mut self,
+        _kind: CapturePermissionKind,
+    ) -> Result<PermissionStatus, String> {
+        Err("native capture is supported on macOS only".to_owned())
+    }
+
     fn open_permission_settings(&mut self, _kind: CapturePermissionKind) -> Result<(), String> {
         Err("native capture is supported on macOS only".to_owned())
     }
@@ -1330,6 +1370,14 @@ pub fn capture_permissions(
 }
 
 #[tauri::command(async)]
+pub fn request_capture_permission(
+    kind: CapturePermissionKind,
+    state: tauri::State<'_, AppCapture>,
+) -> Result<PermissionStatus, String> {
+    state.request_permission(kind)
+}
+
+#[tauri::command(async)]
 pub fn open_capture_permission_settings(
     kind: CapturePermissionKind,
     state: tauri::State<'_, AppCapture>,
@@ -1390,7 +1438,7 @@ mod tests {
 
     use super::{
         bridge_link_event, AppCapture, CaptureBackend, CaptureDeviceSelection,
-        CapturePermissionKind, LinkOptions, MeetingEmitter, PermissionSnapshot,
+        CapturePermissionKind, LinkOptions, MeetingEmitter, PermissionSnapshot, PermissionStatus,
     };
 
     #[test]
@@ -1533,6 +1581,23 @@ mod tests {
     impl CaptureBackend for FakeBackend {
         fn permissions(&mut self) -> Result<PermissionSnapshot, String> {
             Ok(self.permissions.clone())
+        }
+
+        fn request_permission(
+            &mut self,
+            kind: CapturePermissionKind,
+        ) -> Result<PermissionStatus, String> {
+            let (kind_name, status) = match kind {
+                CapturePermissionKind::ScreenRecording => {
+                    ("screen-recording", self.permissions.screen_recording)
+                }
+                CapturePermissionKind::Microphone => ("microphone", self.permissions.microphone),
+            };
+            self.actions
+                .lock()
+                .unwrap()
+                .push(format!("permissions:request:{kind_name}"));
+            Ok(status)
         }
 
         fn open_permission_settings(&mut self, kind: CapturePermissionKind) -> Result<(), String> {
@@ -1692,6 +1757,13 @@ mod tests {
             Ok(PermissionSnapshot::granted())
         }
 
+        fn request_permission(
+            &mut self,
+            _kind: CapturePermissionKind,
+        ) -> Result<PermissionStatus, String> {
+            Ok(PermissionStatus::Granted)
+        }
+
         fn open_permission_settings(&mut self, _kind: CapturePermissionKind) -> Result<(), String> {
             Ok(())
         }
@@ -1849,6 +1921,31 @@ mod tests {
         assert_eq!(
             actions.lock().unwrap().last().map(String::as_str),
             Some("permissions:open:screen-recording")
+        );
+    }
+
+    #[test]
+    fn permission_request_is_forwarded_to_the_native_backend() {
+        let app_data = temporary_app_data("permission-request");
+        let (service, actions) = service(
+            PermissionSnapshot {
+                screen_recording: super::PermissionStatus::Unknown,
+                microphone: super::PermissionStatus::Granted,
+            },
+            SourceReadiness {
+                system: false,
+                microphone: false,
+            },
+            app_data,
+        );
+
+        service
+            .request_permission(CapturePermissionKind::ScreenRecording)
+            .unwrap();
+
+        assert_eq!(
+            actions.lock().unwrap().last().map(String::as_str),
+            Some("permissions:request:screen-recording")
         );
     }
 

@@ -15,7 +15,7 @@ Two processes on the user's machine:
 │  crates/app      shell, commands, state              │
 │  crates/lma-capture   dual-mono mic + loopback, mixer│
 │  crates/lma-link     WS client to sidecar            │
-│  ui/             React TS webview                    │
+│  src/            React TS webview                    │
 └──────────────┬───────────────────────────────────────┘
                │ one WebSocket, 127.0.0.1, token handshake
 ┌──────────────▼───────────────────────────────────────┐
@@ -54,7 +54,7 @@ capture ([WebSocket Streaming API](websocket-streaming-api.md)).
 crates/app           Tauri shell: commands, event forwarding, app state
 crates/lma-capture   device enumeration, SCK shim, WASAPI loopback, mixer
 crates/lma-link      sidecar WS client: framing, reconnect buffer, backoff
-ui/                  React TS webview
+src/                 React TS webview
 python/sidecar/      entrypoint, WS server, event bus, lifecycle supervisor
 python/lma_stt/      Engine protocol + deepgram | assemblyai | azure adapters
 python/lma_pipeline/ word items → segments: runs, windows, stable IDs
@@ -71,6 +71,14 @@ prompts/             default templates: summary sections, chat buttons
 
 Every component is testable without the others; run from the repo root.
 
+Prepare the Python and frontend workspaces first:
+
+```bash
+uv sync --all-packages
+npm --prefix src ci
+npm --prefix src run build
+```
+
 **Rust workspace** (`crates/*`, after `cargo build`):
 
 | Command | Covers |
@@ -79,6 +87,14 @@ Every component is testable without the others; run from the repo root.
 | `cargo test -p lma-link` | framing, ≤3 s reconnect-buffer eviction, backoff schedule, single-flight connect guard |
 | `cargo test -p app` | Tauri commands, parameterized writes on Rust-owned tables, reader half of WAL concurrency tests |
 | `cargo clippy --workspace --all-targets -- -D warnings` | lint gate |
+
+**React webview** (`src/`):
+
+| Command | Covers |
+|---|---|
+| `npm --prefix src test` | provider hierarchy and component integration regressions |
+| `npm --prefix src run lint` | React and TypeScript lint gate |
+| `npm --prefix src run build` | TypeScript project build and production Vite bundle |
 
 For the macOS desktop-capture slice, the focused hardware-free checks are:
 
@@ -143,33 +159,38 @@ imported:
 ```python
 class MeetingContext(TypedDict):
     call_id: str
-    sample_rate: int                       # from START frame
-    diarize: dict                          # {"system": bool, "mic": bool}
-    language_hints: list[str]              # may be empty
+    sample_rate: int  # from START frame
+    diarize: dict  # {"system": bool, "mic": bool}
+    language_hints: list[str]  # may be empty
+
 
 class WordItem(TypedDict):
     content: str
     type: Literal["pronunciation", "punctuation"]
-    start_time: float                      # seconds from stream start
+    start_time: float  # seconds from stream start
     end_time: float
-    speaker: str | None                    # "spk_N" or None
-    channel: Literal["CALLER", "AGENT"]    # assigned by the adapter
-    result_id: str                         # engine-result identity; adapters
-                                           # synthesize one when the provider
-                                           # has no native equivalent
+    speaker: str | None  # "spk_N" or None
+    channel: Literal["CALLER", "AGENT"]  # assigned by the adapter
+    result_id: str  # engine-result identity; adapters
+    # synthesize one when the provider
+    # has no native equivalent
+
 
 class Engine(Protocol):
     async def start(self, ctx: MeetingContext) -> ResultStream: ...
 
+
 class ResultStream(Protocol):
-    async def feed(self, pcm: bytes) -> None: ...      # 100 ms stereo chunks
-    async def close(self) -> None: ...                 # graceful stream end
+    async def feed(self, pcm: bytes) -> None: ...  # 100 ms stereo chunks
+    async def close(self) -> None: ...  # graceful stream end
     def __aiter__(self) -> AsyncIterator[Result]: ...
+
 
 class Result(TypedDict):
     """One engine result boundary: items + finality."""
+
     result_id: str
-    is_final: bool                 # labels only appear on finals
+    is_final: bool  # labels only appear on finals
     items: list[WordItem]
 ```
 
@@ -252,7 +273,7 @@ at most three seconds of the peer channel until the microphone returns.
 a manual recording until both meters move: meeting startup also rejects a
 missing permission or either inactive source. On stop, the WAV recorder
 finishes at `<app-data>/recordings/<meeting_id>/audio.wav`; on macOS the base
-directory is `~/Library/Application Support/oss-lma/`.
+directory is `~/Library/Application Support/com.osslma.desktop/`.
 
 ## Data model
 

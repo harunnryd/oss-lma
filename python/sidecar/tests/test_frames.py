@@ -25,28 +25,38 @@ QUERY_ID = "33333333-3333-3333-3333-333333333333"
 
 
 def test_parses_minimal_start():
-    frame = parse_frame(json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000}))
+    frame = parse_frame(
+        json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000})
+    )
     assert frame == Start(CALL_ID, 48000, False, False)
 
 
 def test_parses_start_with_diarization_flags():
-    frame = parse_frame(json.dumps({
-        "EventType": "START",
-        "CallId": CALL_ID,
-        "SamplingRate": 16000,
-        "DiarizeSystemChannel": True,
-        "DiarizeMicChannel": True,
-    }))
+    frame = parse_frame(
+        json.dumps(
+            {
+                "EventType": "START",
+                "CallId": CALL_ID,
+                "SamplingRate": 16000,
+                "DiarizeSystemChannel": True,
+                "DiarizeMicChannel": True,
+            }
+        )
+    )
     assert frame == Start(CALL_ID, 16000, True, True)
 
 
 def test_parses_speaker_change():
-    frame = parse_frame(json.dumps({
-        "EventType": "SPEAKER_CHANGE",
-        "CallId": CALL_ID,
-        "Channel": "AGENT",
-        "ActiveSpeaker": "Ayu",
-    }))
+    frame = parse_frame(
+        json.dumps(
+            {
+                "EventType": "SPEAKER_CHANGE",
+                "CallId": CALL_ID,
+                "Channel": "AGENT",
+                "ActiveSpeaker": "Ayu",
+            }
+        )
+    )
     assert frame == SpeakerChange(CALL_ID, "AGENT", "Ayu")
 
 
@@ -60,28 +70,42 @@ def test_parses_pause_resume_end():
 
 
 def test_parses_agent_query_with_history():
-    frame = parse_frame(json.dumps({
-        "EventType": "AGENT_QUERY",
-        "CallId": CALL_ID,
-        "QueryId": QUERY_ID,
-        "Message": "What did we just discuss?",
-        "History": [{"Role": "user", "Content": "hi"}],
-    }))
-    assert frame == AgentQuery(CALL_ID, QUERY_ID, "What did we just discuss?", [{"Role": "user", "Content": "hi"}])
+    frame = parse_frame(
+        json.dumps(
+            {
+                "EventType": "AGENT_QUERY",
+                "CallId": CALL_ID,
+                "QueryId": QUERY_ID,
+                "Message": "What did we just discuss?",
+                "History": [{"Role": "user", "Content": "hi"}],
+            }
+        )
+    )
+    assert frame == AgentQuery(
+        CALL_ID, QUERY_ID, "What did we just discuss?", [{"Role": "user", "Content": "hi"}]
+    )
 
 
 def test_parses_agent_query_without_history():
-    frame = parse_frame(json.dumps({"EventType": "AGENT_QUERY", "CallId": CALL_ID, "QueryId": QUERY_ID, "Message": "q"}))
+    frame = parse_frame(
+        json.dumps(
+            {"EventType": "AGENT_QUERY", "CallId": CALL_ID, "QueryId": QUERY_ID, "Message": "q"}
+        )
+    )
     assert frame == AgentQuery(CALL_ID, QUERY_ID, "q", [])
 
 
 def test_parses_vp_command():
-    frame = parse_frame(json.dumps({
-        "EventType": "VP_COMMAND",
-        "TaskId": "t-1",
-        "Command": "CLICK",
-        "Payload": {"x": 412, "y": 380},
-    }))
+    frame = parse_frame(
+        json.dumps(
+            {
+                "EventType": "VP_COMMAND",
+                "TaskId": "t-1",
+                "Command": "CLICK",
+                "Payload": {"x": 412, "y": 380},
+            }
+        )
+    )
     assert frame == VpCommand("t-1", "CLICK", {"x": 412, "y": 380})
 
 

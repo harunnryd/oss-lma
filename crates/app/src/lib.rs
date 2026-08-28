@@ -24,11 +24,13 @@ pub struct ProviderSettingsState {
 }
 
 pub fn initialize_capture<R: Runtime>(app: &tauri::App<R>) -> Result<(), String> {
-    let sidecar = Arc::new(SidecarSupervisor::new(SidecarCommand::bundled()));
     let app_data_dir = app
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
+    let sidecar = Arc::new(SidecarSupervisor::new(SidecarCommand::for_app_data_dir(
+        &app_data_dir,
+    )));
     std::fs::create_dir_all(&app_data_dir).map_err(|error| error.to_string())?;
     let settings_path = app_data_dir.join("settings.sqlite");
     rusqlite::Connection::open(&settings_path)
@@ -72,6 +74,7 @@ pub fn capture_invoke_handler<R: Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) ->
 {
     tauri::generate_handler![
         commands::capture::capture_permissions,
+        commands::capture::request_capture_permission,
         commands::capture::open_capture_permission_settings,
         commands::capture::capture_devices,
         commands::capture::set_capture_devices,
@@ -86,4 +89,10 @@ pub fn capture_invoke_handler<R: Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) ->
         commands::settings::provider_settings,
         commands::settings::save_provider_settings,
     ]
+}
+
+pub fn shutdown_capture<R: Runtime>(app: &tauri::AppHandle<R>) {
+    if let Some(sidecar) = app.try_state::<Arc<SidecarSupervisor>>() {
+        let _ = sidecar.shutdown();
+    }
 }

@@ -22,7 +22,9 @@ def make_session(results: list[dict]):
 
 
 async def open_session(session):
-    await session.on_text(json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000}))
+    await session.on_text(
+        json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000})
+    )
 
 
 async def test_speaker_change_reaches_active_assembler(monkeypatch):
@@ -34,12 +36,16 @@ async def test_speaker_change_reaches_active_assembler(monkeypatch):
         "set_active_speaker",
         lambda channel, name: calls.append((channel, name)),
     )
-    await session.on_text(json.dumps({
-        "EventType": "SPEAKER_CHANGE",
-        "CallId": CALL_ID,
-        "Channel": "AGENT",
-        "ActiveSpeaker": "Ayu",
-    }))
+    await session.on_text(
+        json.dumps(
+            {
+                "EventType": "SPEAKER_CHANGE",
+                "CallId": CALL_ID,
+                "Channel": "AGENT",
+                "ActiveSpeaker": "Ayu",
+            }
+        )
+    )
     assert calls == [("AGENT", "Ayu")]
 
 
@@ -70,28 +76,32 @@ async def test_end_drains_final_results_and_keeps_socket_open():
     partial = {
         "result_id": "r1",
         "is_partial": True,
-        "items": [WordItem(
-            content="hello",
-            type="pronunciation",
-            start_time=0.0,
-            end_time=0.8,
-            speaker="spk_0",
-            channel="CALLER",
-            result_id="r1",
-        )],
+        "items": [
+            WordItem(
+                content="hello",
+                type="pronunciation",
+                start_time=0.0,
+                end_time=0.8,
+                speaker="spk_0",
+                channel="CALLER",
+                result_id="r1",
+            )
+        ],
     }
     final = {
         "result_id": "r1",
         "is_partial": False,
-        "items": [WordItem(
-            content="hello there",
-            type="pronunciation",
-            start_time=0.0,
-            end_time=1.6,
-            speaker="spk_0",
-            channel="CALLER",
-            result_id="r1",
-        )],
+        "items": [
+            WordItem(
+                content="hello there",
+                type="pronunciation",
+                start_time=0.0,
+                end_time=1.6,
+                speaker="spk_0",
+                channel="CALLER",
+                result_id="r1",
+            )
+        ],
     }
     connection, engines, session = make_session([partial, final])
     await open_session(session)
@@ -112,7 +122,9 @@ async def test_restart_on_same_socket_finalizes_previous_session():
     _connection, engines, session = make_session([])
     await open_session(session)
     first_stream = engines[0].stream
-    await session.on_text(json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000}))
+    await session.on_text(
+        json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000})
+    )
     assert first_stream.closed is True
     assert len(engines) == 2
     assert engines[1].started_with[0]["call_id"] == CALL_ID

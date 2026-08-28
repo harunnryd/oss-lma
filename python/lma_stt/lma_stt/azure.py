@@ -6,7 +6,7 @@ import wave
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from io import BytesIO
-from typing import Any
+from typing import Any, Literal
 
 import websockets
 
@@ -47,7 +47,7 @@ def _attach_punctuation(words: list[dict[str, Any]], display: str) -> list[str]:
     return rendered
 
 
-def map_message(message: dict[str, Any], *, channel: str) -> Result:
+def map_message(message: dict[str, Any], *, channel: Literal["CALLER", "AGENT"]) -> Result:
     offset = int(message.get("Offset", 0))
     duration = int(message.get("Duration", 0))
     result_id = str(message.get("Id", f"{offset}-{duration}"))
@@ -61,7 +61,7 @@ def map_message(message: dict[str, Any], *, channel: str) -> Result:
             start_time=int(word["Offset"]) / _TICKS_PER_SECOND,
             end_time=(int(word["Offset"]) + int(word["Duration"])) / _TICKS_PER_SECOND,
             speaker=None,
-            channel=channel,  # type: ignore[arg-type]
+            channel=channel,
             result_id=result_id,
         )
         for word, content in zip(words, rendered, strict=True)
@@ -69,7 +69,9 @@ def map_message(message: dict[str, Any], *, channel: str) -> Result:
     return {"result_id": result_id, "is_partial": False, "items": items}
 
 
-def map_messages(messages: list[dict[str, Any]], *, channel: str = "CALLER") -> list[Result]:
+def map_messages(
+    messages: list[dict[str, Any]], *, channel: Literal["CALLER", "AGENT"] = "CALLER"
+) -> list[Result]:
     return [
         map_message(message, channel=channel)
         for message in messages

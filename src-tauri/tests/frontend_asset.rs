@@ -13,9 +13,25 @@ fn frontend_dist() -> PathBuf {
     root.join(frontend_dist)
 }
 
-/// Skip the test if `npm run build` has not been run yet. The frontend
-/// is built by `cargo tauri build` via beforeBundleCommand; this test
-/// is a development-time sanity check, not a CI substitute.
+#[test]
+fn main_window_can_subscribe_to_native_events() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let capability: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(root.join("capabilities/main.json")).expect("main capability exists"),
+    )
+    .expect("main capability is valid json");
+    let permissions = capability["permissions"]
+        .as_array()
+        .expect("permissions are configured");
+
+    for required in ["core:event:allow-listen", "core:event:allow-unlisten"] {
+        assert!(
+            permissions.iter().any(|permission| permission == required),
+            "main capability missing `{required}`"
+        );
+    }
+}
+
 macro_rules! skip_if_missing {
     ($path:expr) => {
         if !$path.exists() {
@@ -45,8 +61,12 @@ fn tauri_frontend_dist_contains_assets_directory() {
         .collect();
     assert!(!entries.is_empty(), "assets/ directory must not be empty");
 
-    let has_js = entries.iter().any(|e| e.path().extension().and_then(|s| s.to_str()) == Some("js"));
-    let has_css = entries.iter().any(|e| e.path().extension().and_then(|s| s.to_str()) == Some("css"));
+    let has_js = entries
+        .iter()
+        .any(|e| e.path().extension().and_then(|s| s.to_str()) == Some("js"));
+    let has_css = entries
+        .iter()
+        .any(|e| e.path().extension().and_then(|s| s.to_str()) == Some("css"));
     assert!(has_js, "expected a hashed .js bundle in assets/");
     assert!(has_css, "expected a hashed .css bundle in assets/");
 }
@@ -65,7 +85,6 @@ fn frontend_bundle_contains_required_wire_protocol_strings() {
 
     let bundle_text = fs::read_to_string(&bundle).expect("bundle readable");
 
-    // Wire-protocol event types the UI handles in its event switch.
     for required in [
         "ADD_TRANSCRIPT_SEGMENT",
         "DELETE_TRANSCRIPT_SEGMENT",
@@ -78,7 +97,6 @@ fn frontend_bundle_contains_required_wire_protocol_strings() {
         );
     }
 
-    // Recovery catalog codes the UI surfaces in toasts.
     for code in [
         "STT_PROVIDER_AUTH",
         "STT_STREAM_RESET",
@@ -93,12 +111,17 @@ fn frontend_bundle_contains_required_wire_protocol_strings() {
         "SIDECAR_UNAVAILABLE",
         "PORT_BIND_FAILED",
     ] {
-        assert!(bundle_text.contains(code), "bundle missing recovery code `{code}`");
+        assert!(
+            bundle_text.contains(code),
+            "bundle missing recovery code `{code}`"
+        );
     }
 
-    // Tauri channel names the bundle subscribes to.
     for channel in ["meeting-event", "capture-status"] {
-        assert!(bundle_text.contains(channel), "bundle missing channel `{channel}`");
+        assert!(
+            bundle_text.contains(channel),
+            "bundle missing channel `{channel}`"
+        );
     }
 }
 
@@ -116,7 +139,6 @@ fn frontend_bundle_does_not_leak_secrets_or_endpoint_details() {
 
     let bundle_text = fs::read_to_string(&bundle).expect("bundle readable");
 
-    // No hard-coded secrets should ever appear in the frontend bundle.
     for forbidden in [
         "sk-proj-",
         "DEEPGRAM_API_KEY=",

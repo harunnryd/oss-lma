@@ -60,9 +60,15 @@ def _word_type(word: str, punctuated_word: str | None) -> str:
 
 def map_message(message: dict) -> Result:
     metadata = message["metadata"]
-    result_id = f"{metadata['request_id']}-{metadata['sequence']}"
+    channel_index = message["channel_index"][0]
+    sequence = metadata.get("sequence")
+    if sequence is None:
+        start_ms = round(float(message.get("start", 0)) * 1_000)
+        result_id = f"{metadata['request_id']}-{channel_index}-{start_ms}"
+    else:
+        result_id = f"{metadata['request_id']}-{sequence}"
     is_final = bool(message["is_final"])
-    channel = "CALLER" if message["channel_index"][0] == 0 else "AGENT"
+    channel = "CALLER" if channel_index == 0 else "AGENT"
     items: list[WordItem] = []
     for w in message["channel"]["alternatives"][0]["words"]:
         word = w["word"]

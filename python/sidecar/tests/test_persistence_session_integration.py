@@ -28,7 +28,9 @@ async def make_session_with_db(tmp_path, results):
     connection = MemoryConnection()
     engine = ScriptedEngine(results)
     session = Session(connection, lambda ctx: engine, db=SqliteWriter(db_conn))
-    await session.on_text(json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000}))
+    await session.on_text(
+        json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000})
+    )
     return connection, db_conn, engine, session
 
 
@@ -74,10 +76,12 @@ async def test_session_meeting_status_updates_on_end(tmp_path):
     _connection, db_conn, _, session = await make_session_with_db(tmp_path, [])
     await session.on_text(json.dumps({"EventType": "END", "CallId": CALL_ID}))
     await eventually(
-        lambda: db_conn.execute(
-            "SELECT status FROM meetings WHERE id = ?", (CALL_ID,)
-        ).fetchone()["status"]
-        == "COMPLETED"
+        lambda: (
+            db_conn.execute("SELECT status FROM meetings WHERE id = ?", (CALL_ID,)).fetchone()[
+                "status"
+            ]
+            == "COMPLETED"
+        )
     )
 
 
@@ -87,10 +91,13 @@ async def test_session_records_audio_when_recorder_provided(tmp_path):
     recorder_path = tmp_path / "rec.wav"
     recorder = WavRecordingSink(recorder_path)
     session = Session(connection, lambda ctx: engine, recorder=recorder)
-    await session.on_text(json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000}))
+    await session.on_text(
+        json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000})
+    )
     await session.on_binary(bytes(19200))
     await session.on_text(json.dumps({"EventType": "END", "CallId": CALL_ID}))
     import wave
+
     with wave.open(str(recorder_path), "rb") as reader:
         assert reader.getnframes() == 4800
 
@@ -104,11 +111,14 @@ async def test_session_creates_recorder_when_record_meeting_true(tmp_path, monke
         lambda ctx: engine,
         record_meeting=True,
     )
-    await session.on_text(json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000}))
+    await session.on_text(
+        json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000})
+    )
     assert session.recorder is not None
     await session.on_binary(bytes(19200))
     await session.on_text(json.dumps({"EventType": "END", "CallId": CALL_ID}))
     import wave
+
     wav_path = tmp_path / "recs" / CALL_ID / "audio.wav"
     assert wav_path.exists()
     with wave.open(str(wav_path), "rb") as reader:
@@ -119,7 +129,9 @@ async def test_session_default_db_is_noop():
     connection = MemoryConnection()
     engine = ScriptedEngine([])
     session = Session(connection, lambda ctx: engine)
-    await session.on_text(json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000}))
+    await session.on_text(
+        json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000})
+    )
     assert session.db is None
 
 
@@ -153,20 +165,25 @@ async def test_db_write_error_sends_db_write_conflict_frame(tmp_path):
         lambda ctx: engine,
         db=SqliteWriter(db_conn),
     )
-    await session.on_text(json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000}))
+    await session.on_text(
+        json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000})
+    )
     db_conn.execute("DELETE FROM meetings WHERE id = ?", (CALL_ID,))
     db_conn.commit()
     await session.on_binary(bytes(19200))
-    await eventually(lambda: any(
-        json.loads(m).get("Code") == "DB_WRITE_CONFLICT" for m in connection.sent
-    ))
-    frame = next(json.loads(m) for m in connection.sent if json.loads(m).get("Code") == "DB_WRITE_CONFLICT")
+    await eventually(
+        lambda: any(json.loads(m).get("Code") == "DB_WRITE_CONFLICT" for m in connection.sent)
+    )
+    frame = next(
+        json.loads(m) for m in connection.sent if json.loads(m).get("Code") == "DB_WRITE_CONFLICT"
+    )
     assert frame["EventType"] == "ERROR"
     assert frame["CallId"] == CALL_ID
 
 
 def test_session_default_time_offset_is_zero():
     from sidecar.session import Session
+
     conn = MemoryConnection()
     session = Session(conn, lambda ctx: ScriptedEngine([]))
     assert session.time_offset_ms == 0
@@ -174,6 +191,7 @@ def test_session_default_time_offset_is_zero():
 
 def test_apply_offset_identity_when_zero():
     from sidecar.session import Session
+
     conn = MemoryConnection()
     session = Session(conn, lambda ctx: ScriptedEngine([]))
     event = {
@@ -190,6 +208,7 @@ def test_apply_offset_identity_when_zero():
 
 def test_apply_offset_adds_to_segment_timestamps():
     from sidecar.session import Session
+
     conn = MemoryConnection()
     session = Session(conn, lambda ctx: ScriptedEngine([]))
     event = {
@@ -226,7 +245,9 @@ async def test_pump_persists_offset_adjusted_segments(tmp_path):
     connection = MemoryConnection()
     engine = ScriptedEngine([result])
     session = Session(connection, lambda ctx: engine, db=SqliteWriter(db_conn))
-    await session.on_text(json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000}))
+    await session.on_text(
+        json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000})
+    )
     session.time_offset_ms = 12_500
     await session.on_binary(bytes(19200))
     await eventually(lambda: len(connection.sent) == 1)
@@ -249,7 +270,9 @@ async def test_start_session_loads_existing_offset_from_db(tmp_path):
     db_conn.commit()
     connection = MemoryConnection()
     session = Session(connection, lambda ctx: ScriptedEngine([]), db=SqliteWriter(db_conn))
-    await session.on_text(json.dumps({"EventType": "START", "CallId": "m-1", "SamplingRate": 48000}))
+    await session.on_text(
+        json.dumps({"EventType": "START", "CallId": "m-1", "SamplingRate": 48000})
+    )
     assert session.time_offset_ms == 12345
 
 
@@ -315,13 +338,17 @@ async def test_pump_reconnects_after_provider_reset(tmp_path):
         db=SqliteWriter(db_conn),
         sleep=lambda _s: asyncio.sleep(0),
     )
-    await session.on_text(json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000}))
+    await session.on_text(
+        json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000})
+    )
     await eventually(
         lambda: any(json.loads(m).get("Code") == "STT_STREAM_RESET" for m in connection.sent)
     )
     await session.on_binary(bytes(19200))
     await eventually(
-        lambda: any(json.loads(m).get("EventType") == "ADD_TRANSCRIPT_SEGMENT" for m in connection.sent)
+        lambda: any(
+            json.loads(m).get("EventType") == "ADD_TRANSCRIPT_SEGMENT" for m in connection.sent
+        )
     )
     sent = [json.loads(m) for m in connection.sent]
     assert any(s.get("Code") == "STT_STREAM_RESET" for s in sent if s.get("EventType") == "ERROR")
@@ -386,16 +413,19 @@ async def test_pump_retries_when_restart_attempt_itself_fails(tmp_path):
         db=SqliteWriter(db_conn),
         sleep=lambda _s: asyncio.sleep(0),
     )
-    await session.on_text(json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000}))
+    await session.on_text(
+        json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000})
+    )
     await eventually(
-        lambda: sum(
-            1 for m in connection.sent if json.loads(m).get("Code") == "STT_STREAM_RESET"
+        lambda: (
+            sum(1 for m in connection.sent if json.loads(m).get("Code") == "STT_STREAM_RESET") >= 2
         )
-        >= 2
     )
     await session.on_binary(bytes(19200))
     await eventually(
-        lambda: any(json.loads(m).get("EventType") == "ADD_TRANSCRIPT_SEGMENT" for m in connection.sent)
+        lambda: any(
+            json.loads(m).get("EventType") == "ADD_TRANSCRIPT_SEGMENT" for m in connection.sent
+        )
     )
     sent = [json.loads(m) for m in connection.sent]
     reset_frames = [s for s in sent if s.get("Code") == "STT_STREAM_RESET"]
@@ -427,7 +457,9 @@ async def test_pump_closes_connection_after_budget_exhausted(tmp_path):
         db=SqliteWriter(db_conn),
         sleep=lambda _s: asyncio.sleep(0),
     )
-    await session.on_text(json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000}))
+    await session.on_text(
+        json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000})
+    )
     await eventually(lambda: bool(connection.closes))
     assert connection.closes == [(1013, "stt-reconnect-exhausted")]
     reset_frames = [
@@ -493,7 +525,9 @@ class DeadFeedEngine(ScriptedEngine):
 async def test_on_binary_tolerates_dead_provider_stream(tmp_path):
     connection = MemoryConnection()
     session = Session(connection, lambda ctx: ScriptedEngine([]))
-    await session.on_text(json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000}))
+    await session.on_text(
+        json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000})
+    )
     dead = DeadFeedStream([], _provider_closed())
     session.stream = dead
     await session.on_binary(bytes(19200))
@@ -534,7 +568,9 @@ async def test_session_survives_audio_during_reconnect_backoff(tmp_path):
         db=SqliteWriter(db_conn),
         sleep=gated_sleep,
     )
-    await session.on_text(json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000}))
+    await session.on_text(
+        json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000})
+    )
     await asyncio.wait_for(entered_backoff.wait(), 2.0)
     await session.on_binary(bytes(19200))
     await session.on_binary(bytes(19200))
@@ -602,8 +638,7 @@ async def test_start_resumes_timeline_after_crash_without_clean_end(tmp_path):
     await eventually(lambda: len(second_connection.sent) == 1)
 
     rows = db_conn.execute(
-        "SELECT segment_id, start_ms, end_ms FROM segments WHERE meeting_id = ? "
-        "ORDER BY start_ms",
+        "SELECT segment_id, start_ms, end_ms FROM segments WHERE meeting_id = ? ORDER BY start_ms",
         (CALL_ID,),
     ).fetchall()
     assert [(r["start_ms"], r["end_ms"]) for r in rows] == [(0, 3000), (3000, 5000)]

@@ -4,15 +4,21 @@ from lma_stt.types import WordItem
 
 def word(content, start, end, speaker=None):
     return WordItem(
-        content=content, type="pronunciation",
-        start_time=start, end_time=end, speaker=speaker,
+        content=content,
+        type="pronunciation",
+        start_time=start,
+        end_time=end,
+        speaker=speaker,
     )
 
 
 def punct(content, start):
     return WordItem(
-        content=content, type="punctuation",
-        start_time=start, end_time=start, speaker=None,
+        content=content,
+        type="punctuation",
+        start_time=start,
+        end_time=start,
+        speaker=None,
     )
 
 
@@ -22,8 +28,12 @@ def assembler(**overrides):
 
 def test_buckets_split_at_twenty_second_boundaries():
     asm = assembler()
-    items = [word("aa", 10.0, 10.3), word("bb", 19.9, 20.2),
-             word("cc", 29.95, 30.2), word("dd", 30.4, 30.7)]
+    items = [
+        word("aa", 10.0, 10.3),
+        word("bb", 19.9, 20.2),
+        word("cc", 29.95, 30.2),
+        word("dd", 30.4, 30.7),
+    ]
     buckets = asm._buckets(items, 10.0)
     assert [index for index, _ in buckets] == [0, 1]
     assert [i.content for i in buckets[0][1]] == ["aa", "bb", "cc"]
@@ -32,8 +42,7 @@ def test_buckets_split_at_twenty_second_boundaries():
 
 def test_punctuation_rides_preceding_word_window():
     asm = assembler()
-    items = [word("aa", 0.0, 0.3), punct(",", 0.4),
-             word("bb", 19.9, 20.2), word("cc", 20.05, 20.3)]
+    items = [word("aa", 0.0, 0.3), punct(",", 0.4), word("bb", 19.9, 20.2), word("cc", 20.05, 20.3)]
     buckets = asm._buckets(items, 0.0)
     assert [i.content for i in buckets[0][1]] == ["aa", ",", "bb"]
     assert [i.content for i in buckets[1][1]] == ["cc"]
@@ -41,10 +50,18 @@ def test_punctuation_rides_preceding_word_window():
 
 def test_bucketing_depends_only_on_passed_origin():
     asm = assembler()
-    original = [word("aa", 10.0, 10.3), word("bb", 19.9, 20.2),
-                word("cc", 29.95, 30.2), word("dd", 30.4, 30.7)]
-    revised = [word("aa", 9.0, 9.3), word("bb", 19.9, 20.2),
-               word("cc", 29.95, 30.2), word("dd", 30.4, 30.7)]
+    original = [
+        word("aa", 10.0, 10.3),
+        word("bb", 19.9, 20.2),
+        word("cc", 29.95, 30.2),
+        word("dd", 30.4, 30.7),
+    ]
+    revised = [
+        word("aa", 9.0, 9.3),
+        word("bb", 19.9, 20.2),
+        word("cc", 29.95, 30.2),
+        word("dd", 30.4, 30.7),
+    ]
     pinned = asm._buckets(revised, 10.0)
     assert [index for index, _ in pinned] == [0, 1]
     drifted = asm._buckets(revised, 9.0)

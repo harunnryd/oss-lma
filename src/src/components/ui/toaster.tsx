@@ -7,27 +7,7 @@ import {
   ToastTitle,
   ToastViewport,
 } from '@/components/ui/toast';
-
-type ToastItem = {
-  id: string;
-  title?: string;
-  description?: string;
-  variant?: 'default' | 'destructive' | 'warning';
-};
-
-type ToastContextValue = {
-  toasts: ToastItem[];
-  push: (toast: Omit<ToastItem, 'id'>) => void;
-  dismiss: (id: string) => void;
-};
-
-const ToastContext = React.createContext<ToastContextValue | null>(null);
-
-export function useToast() {
-  const ctx = React.useContext(ToastContext);
-  if (!ctx) throw new Error('useToast must be used inside <ToasterProvider>');
-  return ctx;
-}
+import { ToastContext, type ToastItem } from '@/components/ui/toast-context';
 
 export function ToasterProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = React.useState<ToastItem[]>([]);

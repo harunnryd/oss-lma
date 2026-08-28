@@ -57,7 +57,9 @@ def url(port: int, token: str) -> str:
 async def live_sidecar():
     sink = io.StringIO()
     stop = asyncio.Event()
-    task = asyncio.create_task(run_server(lambda ctx: ScriptedEngine(list(RESULTS)), stop=stop, ready_sink=sink))
+    task = asyncio.create_task(
+        run_server(lambda ctx: ScriptedEngine(list(RESULTS)), stop=stop, ready_sink=sink)
+    )
     await eventually(lambda: "SIDECAR_READY" in sink.getvalue())
     port = int(sink.getvalue().split("port=")[1].split()[0])
     token = sink.getvalue().split("token=")[1].strip()
@@ -174,13 +176,17 @@ async def test_wrong_size_binary_yields_error_then_close_1008(live_sidecar):
 async def test_agent_query_receives_status_thinking_step(live_sidecar):
     port, token = live_sidecar
     async with connect(url(port, token)) as ws:
-        await ws.send(json.dumps({
-            "EventType": "AGENT_QUERY",
-            "CallId": CALL_ID,
-            "QueryId": QUERY_ID,
-            "Message": "What did we just discuss?",
-            "History": [],
-        }))
+        await ws.send(
+            json.dumps(
+                {
+                    "EventType": "AGENT_QUERY",
+                    "CallId": CALL_ID,
+                    "QueryId": QUERY_ID,
+                    "Message": "What did we just discuss?",
+                    "History": [],
+                }
+            )
+        )
         event = json.loads(await ws.recv())
         assert event == {
             "EventType": "THINKING_STEP",

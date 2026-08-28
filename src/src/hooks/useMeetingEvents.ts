@@ -4,15 +4,8 @@ import { onCaptureStatus, onMeetingEvent, type WireEvent } from '@/lib/tauri';
 import { useMeetingStore } from '@/stores/meetingStore';
 import { usePermissionStore } from '@/stores/permissionStore';
 import { useTranscriptStore } from '@/stores/transcriptStore';
-import { useToast } from '@/components/ui/toaster';
+import { useToast } from '@/components/ui/toast-context';
 
-/**
- * Subscribes to the two Tauri event channels the UI cares about:
- * - capture-status  : backend → UI status transitions
- * - meeting-event   : wire frames emitted by the sidecar
- *
- * Mount once at the app shell so the subscription outlives page navigation.
- */
 export function useMeetingEvents() {
   const setStatus = useMeetingStore((s) => s.setStatus);
   const upsert = useTranscriptStore((s) => s.upsert);
@@ -64,8 +57,6 @@ export function useMeetingEvents() {
 export function usePermissionsSync() {
   const setPermissions = usePermissionStore((s) => s.setPermissions);
   const perms = usePermissionStore((s) => s.permissions);
-  // The permission store is populated by usePermissions hook; this is a
-  // separate sync helper kept here for parity with useMeetingEvents.
   useEffect(() => {
     setPermissions(perms);
   }, [perms, setPermissions]);

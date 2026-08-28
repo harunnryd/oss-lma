@@ -1,4 +1,9 @@
-use std::{collections::HashMap, fmt, path::{Path, PathBuf}, sync::Mutex};
+use std::{
+    collections::HashMap,
+    fmt,
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -7,13 +12,6 @@ const PROVIDER_SETTINGS_KEY: &str = "stt.provider_settings";
 const KEYCHAIN_SERVICE: &str = "com.oss-lma.desktop";
 
 #[derive(Clone, Copy, Debug, Deserialize, Hash, PartialEq, Eq, Serialize)]
-// Wire field values must match python/lma_stt/config.py's
-// ProviderKind values exactly: "deepgram", "assemblyAi", "azure".
-// serde's built-in case conventions (lowercase / camelCase / kebab-case)
-// cannot reproduce that mix, so each variant is renamed explicitly.
-// Without these aliases the sidecar exits 1 with "unknown STT provider"
-// on every spawn, the supervisor times out waiting for the readiness
-// line, and the whole Tauri app crashes via SIGABRT during setup.
 pub enum ProviderKind {
     #[serde(rename = "deepgram")]
     Deepgram,
@@ -180,25 +178,20 @@ impl SecretStore for InMemorySecretStore {
     }
 }
 
-/// Stores provider API keys under `app_data_dir/secrets/<account>.key`
-/// with `0600` permissions. Used as an automatic fallback when the
-/// platform keychain rejects unsigned binaries (macOS) or is not
-/// available — the secrets never leave the user's app-data directory.
 pub struct FileSecretStore {
     directory: PathBuf,
 }
 
 impl FileSecretStore {
     pub fn new(directory: PathBuf) -> Result<Self, SettingsError> {
-        std::fs::create_dir_all(&directory).map_err(|error| SettingsError::Storage(error.to_string()))?;
+        std::fs::create_dir_all(&directory)
+            .map_err(|error| SettingsError::Storage(error.to_string()))?;
         Ok(Self { directory })
     }
 
     fn path_for(&self, provider: ProviderKind) -> PathBuf {
-        // The account name is guaranteed path-safe (lowercase ASCII + dashes)
-        // by ProviderKind::keychain_account(); we just reuse it so the
-        // keychain account and file basename stay in sync.
-        self.directory.join(format!("{}.key", provider.keychain_account()))
+        self.directory
+            .join(format!("{}.key", provider.keychain_account()))
     }
 }
 
@@ -218,7 +211,8 @@ impl SecretStore for FileSecretStore {
         }
         #[cfg(not(unix))]
         {
-            std::fs::write(&path, secret).map_err(|error| SettingsError::Storage(error.to_string()))?;
+            std::fs::write(&path, secret)
+                .map_err(|error| SettingsError::Storage(error.to_string()))?;
         }
         std::fs::write(&path, secret).map_err(|error| SettingsError::Storage(error.to_string()))?;
         Ok(())
@@ -251,11 +245,6 @@ impl SecretStore for FileSecretStore {
     }
 }
 
-/// Picks the most secure backend available on the current platform.
-/// Tries the OS keychain first; falls back to `FileSecretStore` if the
-/// keychain rejects the access (typical for unsigned dev builds or CI).
-/// Logs the chosen backend once at startup so users know where their
-/// secrets actually live.
 pub fn pick_secret_store(app_data_dir: &Path) -> Box<dyn SecretStore> {
     pick_secret_store_with_probe(app_data_dir, || OsSecretStore.get(ProviderKind::Deepgram))
 }
@@ -280,8 +269,6 @@ where
             )
         }
         Ok(_) => {
-            // Unexpected — the probe account should never have a value.
-            // Use the keychain anyway; it's reachable.
             eprintln!("[oss-lma] secrets stored in OS keychain (service: {KEYCHAIN_SERVICE})");
             Box::new(OsSecretStore)
         }
@@ -310,6 +297,9 @@ impl SecretStore for OsSecretStore {
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod platform {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
     use keyring::Entry;
 
     use super::{ProviderKind, SettingsError, KEYCHAIN_SERVICE};
@@ -326,11 +316,21 @@ mod platform {
     }
 
     pub(super) fn get(provider: ProviderKind) -> Result<String, SettingsError> {
-        match entry(provider)?.get_password() {
-            Ok(secret) => Ok(secret),
-            Err(keyring::Error::NoEntry) => Err(SettingsError::MissingSecret(provider)),
-            Err(error) => Err(SettingsError::SecretStore(error.to_string())),
-        }
+        let (sender, receiver) = mpsc::sync_channel(1);
+        std::thread::spawn(move || {
+            let result = match entry(provider) {
+                Ok(credential) => match credential.get_password() {
+                    Ok(secret) => Ok(secret),
+                    Err(keyring::Error::NoEntry) => Err(SettingsError::MissingSecret(provider)),
+                    Err(error) => Err(SettingsError::SecretStore(error.to_string())),
+                },
+                Err(error) => Err(error),
+            };
+            let _ = sender.send(result);
+        });
+        receiver
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|_| SettingsError::SecretStore("OS keychain lookup timed out".to_owned()))?
     }
 
     pub(super) fn delete(provider: ProviderKind) -> Result<(), SettingsError> {
@@ -423,9 +423,8 @@ mod tests {
     use serde_json::Value;
 
     use super::{
-        FileSecretStore, InMemorySecretStore, ProviderKind,
-        ProviderPublicSettings, ProviderSettings, SecretStore, SettingsError,
-        SettingsRepository, pick_secret_store_with_probe,
+        pick_secret_store_with_probe, FileSecretStore, InMemorySecretStore, ProviderKind,
+        ProviderPublicSettings, ProviderSettings, SecretStore, SettingsError, SettingsRepository,
     };
 
     #[derive(Default)]
@@ -634,29 +633,11 @@ mod tests {
 
     #[test]
     fn pick_secret_store_prefers_keychain_when_probe_succeeds() {
-        // The probe function is the only thing the selector cares about.
-        // If it returns MissingSecret the selector picks the keychain
-        // and trusts the OS to enforce isolation; we don't try to
-        // exercise the keychain from this test (it requires a signed
-        // binary on macOS) — we only verify the chosen store does NOT
-        // touch the file fallback directory.
         let temp = tempfile::tempdir().expect("tempdir");
-        let store = pick_secret_store_with_probe(temp.path(), || {
+        let _store = pick_secret_store_with_probe(temp.path(), || {
             Err(SettingsError::MissingSecret(ProviderKind::Deepgram))
         });
-        // Even though the keychain might not be reachable from this
-        // unsigned test binary on macOS, the selector chose it
-        // because the probe contractually said "keychain is OK".
-        // We assert contractually: the secret returned by get() must
-        // match what set() stored *in the same backend*. Use the file
-        // store for that round-trip — if the selector picked file
-        // fallback, set will succeed; if it picked keychain, set
-        // may fail with NoStorageAccess and the assertion short-
-        // circuits. Either way the contract holds.
-        let _ = store.set(ProviderKind::Deepgram, "probe-token");
-        if let Ok(token) = store.get(ProviderKind::Deepgram) {
-            assert_eq!(token, "probe-token");
-        }
+        assert!(!temp.path().join("secrets").exists());
     }
 
     #[test]
@@ -667,8 +648,6 @@ mod tests {
                 "NoStorageAccess(test): security framework refused access".to_owned(),
             ))
         });
-        // File fallback stores under the supplied app_data_dir, so
-        // set/get round-trip works regardless of OS keychain state.
         store.set(ProviderKind::Deepgram, "ok").unwrap();
         assert!(store.has(ProviderKind::Deepgram));
         assert_eq!(store.get(ProviderKind::Deepgram).unwrap(), "ok");
@@ -676,11 +655,6 @@ mod tests {
 
     #[test]
     fn provider_kind_serialises_lowercase_for_sidecar_wire() {
-        // The Python sidecar parses `provider` via ProviderKind.parse which
-        // accepts "deepgram" | "assemblyAi" | "azure". Rust must therefore
-        // serialise lowercase; anything else makes the sidecar exit 1
-        // with "unknown STT provider" and the supervisor times out, which
-        // crashes the whole Tauri app via SIGABRT during setup.
         for (variant, expected) in [
             (ProviderKind::Deepgram, "\"deepgram\""),
             (ProviderKind::AssemblyAi, "\"assemblyAi\""),
@@ -692,7 +666,9 @@ mod tests {
                 "expected payload to contain {expected}, got {payload}"
             );
             assert!(
-                !payload.contains("Deepgram") && !payload.contains("AssemblyAi") && !payload.contains("Azure"),
+                !payload.contains("Deepgram")
+                    && !payload.contains("AssemblyAi")
+                    && !payload.contains("Azure"),
                 "serialised provider must not leak PascalCase variants: {payload}"
             );
         }

@@ -19,19 +19,11 @@ from sidecar.storage.persistence import SqliteWriter
 
 
 def _disable_core_dumps() -> None:
-    """Suppress core dumps so secrets cannot leak via post-mortem state.
-
-    POSIX platforms honor RLIMIT_CORE; Windows has no equivalent and the
-    function becomes a no-op there. macOS additionally gates core dumps
-    behind /cores entitlements in some contexts, so we set the soft and
-    hard limits to zero to be safe.
-    """
     if sys.platform == "win32":
         return
     try:
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     except (ValueError, OSError):
-        # Best-effort: never let this guard prevent startup.
         pass
 
 
@@ -52,6 +44,15 @@ def _default_db_path() -> Path:
     xdg = os.environ.get("XDG_DATA_HOME")
     base = Path(xdg) if xdg else Path.home() / ".local" / "share"
     return base / "oss-lma" / "lma.db"
+
+
+def _migration_dir() -> Path:
+    module_dir = Path(__file__).resolve().parent
+    candidates = (
+        module_dir / "storage" / "migrations",
+        module_dir / "sidecar" / "storage" / "migrations",
+    )
+    return next((candidate for candidate in candidates if candidate.is_dir()), candidates[0])
 
 
 def _record_meeting_enabled() -> bool:
@@ -75,7 +76,7 @@ async def main(stdin: BinaryIO | None = None) -> int:
     db_path = _default_db_path()
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = open_db(db_path)
-    apply_migrations(conn, Path(__file__).resolve().parent / "storage" / "migrations")
+    apply_migrations(conn, _migration_dir())
     pending_deletes = PendingDeletes()
     swept = sweep_stale_partials(conn)
     pending_deletes.push(swept)

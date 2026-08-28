@@ -42,6 +42,15 @@ def runtime_payload() -> bytes:
     return len(payload).to_bytes(4, "big") + payload
 
 
+def test_migration_dir_resolves_frozen_layout(monkeypatch, tmp_path):
+    internal = tmp_path / "_internal"
+    migrations = internal / "sidecar" / "storage" / "migrations"
+    migrations.mkdir(parents=True)
+    monkeypatch.setattr(entrypoint, "__file__", str(internal / "__main__.py"))
+
+    assert entrypoint._migration_dir() == migrations
+
+
 async def test_main_returns_one_when_binding_fails(monkeypatch):
     async def refuse(*args, **kwargs):
         raise OSError("address in use")
@@ -94,10 +103,6 @@ def test_subprocess_stdout_contains_only_one_ready_line():
         proc.stdin.write(runtime_payload())
         proc.stdin.flush()
         proc.stdin.close()
-        # The sidecar must not close sys.stdout after the readiness line:
-        # closing the fd breaks every subsequent print() in the sidecar
-        # process, including the structured stderr output the supervisor
-        # relies on.
         ready, _, _ = select.select([proc.stdout], [], [], 5)
         assert ready == [proc.stdout], "sidecar did not emit readiness line within 5s"
         line = proc.stdout.readline().decode()

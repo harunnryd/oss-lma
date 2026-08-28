@@ -28,7 +28,9 @@ pub fn save_provider_settings(
         if secret.trim().is_empty() {
             return Err("the provider API key cannot be empty".to_owned());
         }
-        state.secret_store.as_ref()
+        state
+            .secret_store
+            .as_ref()
             .replace(settings.provider, &secret)
             .map_err(|error| error.to_string())?;
     }
@@ -38,7 +40,9 @@ pub fn save_provider_settings(
         .map_err(|error| error.to_string())?;
     let has_secret = state.secret_store.as_ref().has(settings.provider);
     if has_secret {
-        let secret = state.secret_store.as_ref()
+        let secret = state
+            .secret_store
+            .as_ref()
             .get(settings.provider)
             .map_err(|error| error.to_string())?;
         state

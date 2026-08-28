@@ -4,6 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.osslma.desktop",
   "build": {
+    "beforeDevCommand": "npm --prefix ../src run dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm --prefix ../src run build",
     "frontendDist": "../src/dist",
     "beforeBundleCommand": "uv run --with pyinstaller python ../scripts/build_sidecar.py"
   },

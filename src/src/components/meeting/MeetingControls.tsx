@@ -3,7 +3,7 @@ import { Mic, MicOff, Pause, Play, Square } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useMeetingStore } from '@/stores/meetingStore';
 import { pauseMeeting, resumeMeeting, startMeeting, stopMeeting } from '@/lib/tauri';
-import { useToast } from '@/components/ui/toaster';
+import { useToast } from '@/components/ui/toast-context';
 
 export function MeetingControls() {
   const phase = useMeetingStore((s) => s.phase);

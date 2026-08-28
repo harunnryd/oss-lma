@@ -107,7 +107,9 @@ async def test_e2e_reconnect_with_offset_continuity(tmp_path):
         port = int(match.group(1))
         token = match.group(2)
         async with connect(f"ws://127.0.0.1:{port}/ws?token={token}") as ws:
-            await ws.send(json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000}))
+            await ws.send(
+                json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000})
+            )
             await ws.send(sine_chunk(48000, 440, 880))
 
             segments: list[dict] = []
@@ -134,10 +136,12 @@ async def test_e2e_reconnect_with_offset_continuity(tmp_path):
 
             await ws.send(json.dumps({"EventType": "END", "CallId": CALL_ID}))
             await eventually(
-                lambda: db_conn.execute(
-                    "SELECT status FROM meetings WHERE id = ?", (CALL_ID,)
-                ).fetchone()["status"]
-                == "COMPLETED"
+                lambda: (
+                    db_conn.execute(
+                        "SELECT status FROM meetings WHERE id = ?", (CALL_ID,)
+                    ).fetchone()["status"]
+                    == "COMPLETED"
+                )
             )
 
             assert len(segments) == 2

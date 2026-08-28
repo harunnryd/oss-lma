@@ -4,7 +4,6 @@ import { LayoutDashboard, Radio, Settings, History as HistoryIcon, Sparkles, Shi
 import { cn } from '@/lib/utils';
 import { Separator } from '@/components/ui/separator';
 import { Badge } from '@/components/ui/badge';
-import { ToasterProvider } from '@/components/ui/toaster';
 import { useMeetingEvents } from '@/hooks/useMeetingEvents';
 import { useMeetingStore } from '@/stores/meetingStore';
 
@@ -22,8 +21,7 @@ export function AppShell() {
   const location = useLocation();
 
   return (
-    <ToasterProvider>
-      <div className="flex min-h-screen w-full">
+    <div className="flex min-h-screen w-full">
         <aside className="sticky top-0 flex h-screen w-60 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
           <div className="flex h-14 items-center gap-2 border-b border-sidebar-border px-4">
             <div className="grid h-8 w-8 place-items-center rounded-md bg-primary/15 text-primary">
@@ -80,8 +78,7 @@ export function AppShell() {
             <Outlet />
           </div>
         </main>
-      </div>
-    </ToasterProvider>
+    </div>
   );
 }
 

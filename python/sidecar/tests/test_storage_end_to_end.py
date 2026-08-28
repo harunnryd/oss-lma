@@ -55,7 +55,9 @@ async def test_e2e_segment_emissions_persist_to_db(tmp_path):
         port = int(match.group(1))
         token = match.group(2)
         async with connect(f"ws://127.0.0.1:{port}/ws?token={token}") as ws:
-            await ws.send(json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000}))
+            await ws.send(
+                json.dumps({"EventType": "START", "CallId": CALL_ID, "SamplingRate": 48000})
+            )
             await ws.send(sine_chunk(48000, 440, 880))
             await eventually(lambda: row_count(conn, "segments") == 1)
             assert row_count(conn, "segments") == 1

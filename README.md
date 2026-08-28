@@ -1,37 +1,37 @@
 # oss-lma
 
-Local-first live meeting assistant. Captures meeting audio on your machine,
+Local-first live meeting transcription. Captures meeting audio on your machine,
 streams it through pluggable cloud speech-to-text engines, transcribes both
-sides of the conversation in real time, and runs a LangGraph-powered assistant
-over the live transcript and your meeting history. A headless browser bot can
-join online meetings on your behalf.
+sides of the conversation in real time, and stores meeting history locally.
 
 ## Features
 
 - Live dual-channel transcription (system/meeting audio + microphone)
 - Pluggable STT providers (Deepgram, AssemblyAI, Azure) behind one engine interface
-- Assistant chat grounded in the current meeting and past meetings via local RAG
-- Per-meeting summaries and structured action items
-- Virtual participant bot that joins Zoom / Google Meet for you, with manual takeover
+- Local meeting history and transcript detail views
 - Fully local storage: SQLite + recordings on disk, no accounts, no cloud backend
+
+Assistant chat, summaries, semantic search, and Virtual Participant flows are
+documented product increments that are not part of the current capture release.
 
 ## Requirements
 
-- macOS 13+ (grants Screen Recording and Microphone permission) or Windows 10+
+- macOS 13+ (Windows capture is planned but not implemented yet)
 - Python 3.12+ with [uv](https://docs.astral.sh/uv/), Rust stable with rustup
-- API keys: at least one STT provider and one LLM provider
-- Docker Desktop — only needed for the virtual participant
+- Node.js 20+ with npm
+- API key for at least one STT provider
 
 ## Quick start
 
 ```bash
 git clone <repo-url> oss-lma && cd oss-lma
-uv sync                # python workspace: sidecar + lma_* packages
-cargo tauri dev        # builds the shell, spawns the sidecar, opens the window
+uv sync --all-packages
+npm --prefix src ci
+cargo tauri dev
 ```
 
-On first launch, pick your STT and LLM providers in Settings and paste their
-API keys. Keys are stored in the OS keychain.
+On first launch, pick an STT provider in Settings and paste its API key. Keys
+are stored in the OS keychain.
 
 ## Documentation
 
@@ -53,9 +53,8 @@ Full documentation lives in [`docs/`](docs/INDEX.md):
 
 ```
 crates/       Rust workspace (app shell, capture, transport link)
-ui/           React TS webview
+src/          React TS webview
 python/       uv workspace (sidecar + lma_* packages)
-vp-container/ Docker recipe for the meeting bot
 contracts/    Single source of truth: event schemas + error catalog
 prompts/      Default prompt templates
 ```

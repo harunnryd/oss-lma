@@ -17,8 +17,7 @@ def apply_migrations(conn: sqlite3.Connection, dir: Path) -> list[int]:
     conn.commit()
 
     applied_versions = {
-        row["version"]
-        for row in conn.execute("SELECT version FROM schema_version").fetchall()
+        row["version"] for row in conn.execute("SELECT version FROM schema_version").fetchall()
     }
 
     if not dir.exists():
@@ -39,7 +38,11 @@ def apply_migrations(conn: sqlite3.Connection, dir: Path) -> list[int]:
     applied: list[int] = []
     pending_versions = {version for version, _ in pending}
     for version, path in pending:
-        if version > 1 and (version - 1) not in applied_versions and (version - 1) not in pending_versions:
+        if (
+            version > 1
+            and (version - 1) not in applied_versions
+            and (version - 1) not in pending_versions
+        ):
             break
         sql = path.read_text(encoding="utf-8")
         try:

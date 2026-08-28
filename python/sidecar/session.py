@@ -191,23 +191,6 @@ class Session:
             self.time_offset_ms = max(stored_offset, resumed_offset)
 
     async def _emit_pending_deletes(self) -> None:
-        """Drain the pending-deletes buffer for this session's call_id.
-
-        Emits a DELETE_TRANSCRIPT_SEGMENT frame for every stale partial
-        recorded against this meeting before the supervisor respawned.
-        Persists the deletion via the same write path used for live
-        segments. Callers that re-record under a different segment_id
-        are unaffected because their writes target a fresh row, not the
-        row whose DELETE event we just emitted.
-
-        Fired from `_start_session` AFTER the new `CallId` is recorded
-        on `self.call_id` so the persisted DELETE always points at the
-        meeting the user is about to resume. The matching START event
-        follows in the same call, so any client that observes the
-        DELETE before the START still sees the meeting row on its next
-        fetch — the DELETE only removes the orphan partial, not the
-        meeting itself.
-        """
         if self.pending_deletes is None:
             return
         pairs = self.pending_deletes.consume(self.call_id)

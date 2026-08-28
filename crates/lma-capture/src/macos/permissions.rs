@@ -194,12 +194,20 @@ impl<P: PermissionProvider> MacPermissions<P> {
         self.provider.open_settings(self.kind)
     }
 
-    pub fn ensure_access(&self) -> Result<(), String> {
+    pub fn request_access(&self) -> Result<PermissionState, String> {
         let authorization = match self.provider.status(self.kind) {
             NativeAuthorization::NotDetermined => self.provider.request(self.kind)?,
             authorization => authorization,
         };
-        if authorization == NativeAuthorization::Authorized {
+        Ok(match authorization {
+            NativeAuthorization::Authorized => PermissionState::Granted,
+            NativeAuthorization::Denied => PermissionState::Denied,
+            NativeAuthorization::NotDetermined => PermissionState::Unknown,
+        })
+    }
+
+    pub fn ensure_access(&self) -> Result<(), String> {
+        if self.request_access()? == PermissionState::Granted {
             return Ok(());
         }
         let name = match self.kind {
@@ -364,5 +372,27 @@ mod tests {
         assert!(error.contains("Screen Recording permission was not granted"));
         assert_eq!(*requested.borrow(), [PermissionKind::ScreenRecording]);
         assert_eq!(*opened.borrow(), [PermissionKind::ScreenRecording]);
+    }
+
+    #[test]
+    fn explicit_permission_request_reports_denial_without_opening_settings() {
+        let opened = Rc::new(RefCell::new(Vec::new()));
+        let requested = Rc::new(RefCell::new(Vec::new()));
+        let permissions = MacPermissions::with_provider(
+            PermissionKind::ScreenRecording,
+            FakePermissions {
+                screen: NativeAuthorization::NotDetermined,
+                microphone: NativeAuthorization::Authorized,
+                requested: requested.clone(),
+                opened: opened.clone(),
+            },
+        );
+
+        assert_eq!(
+            permissions.request_access().unwrap(),
+            PermissionState::Denied
+        );
+        assert_eq!(*requested.borrow(), [PermissionKind::ScreenRecording]);
+        assert!(opened.borrow().is_empty());
     }
 }

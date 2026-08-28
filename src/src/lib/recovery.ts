@@ -1,6 +1,3 @@
-// Mirrors the error codes declared in contracts/errors.yaml. Adding
-// a new code on the Rust side without updating this map will surface
-// the raw code in the UI as a fallback.
 
 const CATALOG: Record<string, string> = {
   STT_PROVIDER_AUTH: 'The transcription provider rejected the API key. Update it in Settings.',

@@ -143,6 +143,20 @@ impl CaptureBackend for VerticalBackend {
         Ok(self.permissions.clone())
     }
 
+    fn request_permission(
+        &mut self,
+        kind: app::commands::capture::CapturePermissionKind,
+    ) -> Result<app::commands::capture::PermissionStatus, String> {
+        Ok(match kind {
+            app::commands::capture::CapturePermissionKind::ScreenRecording => {
+                self.permissions.screen_recording
+            }
+            app::commands::capture::CapturePermissionKind::Microphone => {
+                self.permissions.microphone
+            }
+        })
+    }
+
     fn open_permission_settings(
         &mut self,
         _kind: app::commands::capture::CapturePermissionKind,

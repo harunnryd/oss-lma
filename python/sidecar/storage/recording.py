@@ -18,7 +18,7 @@ class NullRecordingSink:
 
 class WavRecordingSink:
     def __init__(self, path: Path) -> None:
-        self._file = wave.open(str(path), "wb")  # noqa: SIM115
+        self._file = wave.Wave_write(str(path))
         self._file.setnchannels(2)
         self._file.setsampwidth(2)
         self._file.setframerate(48000)

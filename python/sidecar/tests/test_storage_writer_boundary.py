@@ -207,12 +207,14 @@ def test_normalize_meeting_started_with_return_offset_reads_existing(tmp_path):
 
 def test_normalize_meeting_started_default_returns_single_tuple():
     from sidecar.storage.writer_boundary import normalize_meeting_started as f
+
     result = f({"EventType": "START", "CallId": "m-1", "SamplingRate": 48000})
     assert isinstance(result, tuple) and len(result) == 3
 
 
 def test_normalize_segment_with_offset():
     from sidecar.storage.writer_boundary import normalize_segment
+
     ev = {
         "EventType": "ADD_TRANSCRIPT_SEGMENT",
         "CallId": "m-1",
@@ -230,6 +232,7 @@ def test_normalize_segment_with_offset():
 
 def test_normalize_segment_zero_offset_is_identity():
     from sidecar.storage.writer_boundary import normalize_segment
+
     ev = {
         "EventType": "ADD_TRANSCRIPT_SEGMENT",
         "CallId": "m-1",

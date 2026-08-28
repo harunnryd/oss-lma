@@ -55,9 +55,7 @@ def test_segments_table_accepts_minimum_viable_row(tmp_path):
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         ("r1-w0-r0", "m-1", "CALLER", 0, 800, "hello", "hello", 0),
     )
-    row = conn.execute(
-        "SELECT segment_id, channel, text, is_partial FROM segments"
-    ).fetchone()
+    row = conn.execute("SELECT segment_id, channel, text, is_partial FROM segments").fetchone()
     assert row["segment_id"] == "r1-w0-r0"
     assert row["channel"] == "CALLER"
     assert row["text"] == "hello"
@@ -79,6 +77,7 @@ def test_second_migration_allows_negative_is_partial(tmp_path):
     )
     row = conn.execute("SELECT is_partial FROM segments").fetchone()
     assert row["is_partial"] == -1
+
 
 def test_third_migration_adds_reconnect_columns(tmp_path):
     conn = open_db(tmp_path / "lma.db")

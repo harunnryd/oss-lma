@@ -1,11 +1,3 @@
-//! Read-only access to the sidecar's meetings + segments SQLite tables.
-//!
-//! The Python sidecar owns this database and is the only writer. The
-//! Rust app reads from it via the same SQLite file in `app_data_dir`
-//! to power the History page in the desktop UI. All queries are
-//! SELECTs; deletes go through `delete_meeting` which performs a
-//! cascading delete inside a single transaction.
-
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -116,9 +108,12 @@ impl MeetingsRepository {
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
-    pub fn list_meeting_segments(&self, meeting_id: &str) -> Result<Vec<MeetingSegment>, MeetingsError> {
+    pub fn list_meeting_segments(
+        &self,
+        meeting_id: &str,
+    ) -> Result<Vec<MeetingSegment>, MeetingsError> {
         let mut statement = self.connection.prepare(
-            "SELECT segment_id, meeting_id, channel, speaker, start_ms, end_ms, transcript, is_partial
+            "SELECT segment_id, meeting_id, channel, speaker, start_ms, end_ms, text AS transcript, is_partial
              FROM segments
              WHERE meeting_id = ?
              ORDER BY start_ms ASC",
@@ -140,12 +135,8 @@ impl MeetingsRepository {
     }
 
     pub fn delete_meeting(&mut self, meeting_id: &str) -> Result<(), MeetingsError> {
-        // Every child table declared in python/sidecar/storage/migrations
-        // has ON DELETE CASCADE on meetings(id), so a single DELETE
-        // clears segments, summaries, action_items, rag_chunks,
-        // agent_assists, agent_tokens and thinking_steps without
-        // having to name them here.
-        self.connection.execute("DELETE FROM meetings WHERE id = ?", params![meeting_id])?;
+        self.connection
+            .execute("DELETE FROM meetings WHERE id = ?", params![meeting_id])?;
         Ok(())
     }
 }
@@ -178,7 +169,7 @@ mod tests {
                     speaker TEXT,
                     start_ms INTEGER NOT NULL,
                     end_ms INTEGER NOT NULL,
-                    transcript TEXT NOT NULL,
+                    text TEXT NOT NULL,
                     is_partial INTEGER NOT NULL
                 );",
             )
@@ -197,7 +188,6 @@ mod tests {
                 [],
             )
             .unwrap();
-        // Open via repository to exercise the same code path.
         let tmp = tempfile_like_path(&connection);
         let repo = MeetingsRepository::open(&tmp).unwrap();
         let meetings = repo.list_meetings(10).unwrap();
@@ -218,7 +208,7 @@ mod tests {
             .unwrap();
         connection
             .execute(
-                "INSERT INTO segments (segment_id, meeting_id, channel, start_ms, end_ms, transcript, is_partial)
+                "INSERT INTO segments (segment_id, meeting_id, channel, start_ms, end_ms, text, is_partial)
                  VALUES ('s1', 'm1', 'CALLER', 0, 1000, 'hello', 0)",
                 [],
             )
@@ -232,15 +222,17 @@ mod tests {
         assert_eq!(segments.len(), 0);
     }
 
-    /// Writes the seed connection's inserts into a fresh on-disk file
-    /// with the same schema so the repository (which opens by path)
-    /// can read the data without requiring the rusqlite `backup` feature.
     fn tempfile_like_path(seed: &Connection) -> std::path::PathBuf {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
         let path = std::env::temp_dir()
-            .join(format!("oss-lma-meetings-{}-{}-{}", std::process::id(), n, line!()))
+            .join(format!(
+                "oss-lma-meetings-{}-{}-{}",
+                std::process::id(),
+                n,
+                line!()
+            ))
             .join("lma.db");
         if path.exists() {
             std::fs::remove_file(&path).unwrap();
@@ -260,7 +252,7 @@ mod tests {
                 meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
                 channel TEXT NOT NULL, speaker TEXT,
                 start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL,
-                transcript TEXT NOT NULL, is_partial INTEGER NOT NULL
+                text TEXT NOT NULL, is_partial INTEGER NOT NULL
             );",
         )
         .unwrap();
@@ -288,7 +280,7 @@ mod tests {
             )
             .unwrap();
         }
-        let mut stmt = seed.prepare("SELECT segment_id, meeting_id, channel, speaker, start_ms, end_ms, transcript, is_partial FROM segments").unwrap();
+        let mut stmt = seed.prepare("SELECT segment_id, meeting_id, channel, speaker, start_ms, end_ms, text, is_partial FROM segments").unwrap();
         let segments: Vec<_> = stmt
             .query_map([], |row| {
                 Ok((
@@ -305,9 +297,11 @@ mod tests {
             .unwrap()
             .filter_map(|r| r.ok())
             .collect();
-        for (segment_id, meeting_id, channel, speaker, start_ms, end_ms, transcript, is_partial) in &segments {
+        for (segment_id, meeting_id, channel, speaker, start_ms, end_ms, transcript, is_partial) in
+            &segments
+        {
             file.execute(
-                "INSERT INTO segments (segment_id, meeting_id, channel, speaker, start_ms, end_ms, transcript, is_partial) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO segments (segment_id, meeting_id, channel, speaker, start_ms, end_ms, text, is_partial) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 rusqlite::params![segment_id, meeting_id, channel, speaker, start_ms, end_ms, transcript, is_partial],
             )
             .unwrap();

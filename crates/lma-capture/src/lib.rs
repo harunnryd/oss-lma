@@ -6,7 +6,6 @@ pub mod recorder;
 pub use mixer::{Mixer, SourceChannel};
 pub use recorder::WavRecorder;
 
-/// A fixed-duration interleaved stereo PCM audio chunk.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StereoChunk {
     pub pcm: Vec<u8>,
@@ -14,13 +13,11 @@ pub struct StereoChunk {
 }
 
 impl StereoChunk {
-    /// Number of bytes in a 100 ms stereo, 16-bit PCM chunk at `rate` Hz.
     pub const fn byte_len(rate: usize) -> usize {
         rate * 2 * 2 / 10
     }
 }
 
-/// Current authorization state for a capture capability.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PermissionState {
     Unknown,
@@ -34,7 +31,6 @@ pub enum DeviceKind {
     Microphone,
 }
 
-/// A capture device exposed to the shell for selection and display.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeviceInfo {
     pub id: String,
@@ -43,7 +39,6 @@ pub struct DeviceInfo {
     pub kind: DeviceKind,
 }
 
-/// Platform-neutral notifications emitted by the capture layer.
 #[derive(Clone, Debug, PartialEq)]
 pub enum CaptureEvent {
     PermissionChanged(PermissionState),

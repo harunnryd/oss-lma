@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Save } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -8,58 +8,17 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useProviderSettings, useSaveProviderSettings } from '@/hooks/useTauriCommand';
-import { useToast } from '@/components/ui/toaster';
+import { useToast } from '@/components/ui/toast-context';
 import type { ProviderDraft, ProviderSettings } from '@/lib/tauri';
 
 const PROVIDERS: Array<{ value: ProviderSettings['provider']; label: string }> = [
-  { value: 'Deepgram', label: 'Deepgram (reference)' },
-  { value: 'AssemblyAi', label: 'AssemblyAI' },
-  { value: 'Azure', label: 'Azure Speech' },
+  { value: 'deepgram', label: 'Deepgram (reference)' },
+  { value: 'assemblyAi', label: 'AssemblyAI' },
+  { value: 'azure', label: 'Azure Speech' },
 ];
 
 export function ProviderForm() {
   const { data, isLoading } = useProviderSettings();
-  const save = useSaveProviderSettings();
-  const { push } = useToast();
-  const [draft, setDraft] = useState<ProviderDraft>({
-    provider: 'Deepgram',
-    model: 'nova-3',
-    language: 'en',
-    azureRegion: '',
-    apiKey: null,
-    diarizeMic: true,
-  });
-
-  useEffect(() => {
-    if (!data) return;
-    setDraft((prev) => ({
-      ...prev,
-      provider: data.provider,
-      model: data.model,
-      language: data.language ?? '',
-      azureRegion: data.azureRegion ?? '',
-      apiKey: null,
-      diarizeMic: data.diarizeMic,
-    }));
-  }, [data]);
-
-  const isAzure = draft.provider === 'Azure';
-
-  function handleSave(event: React.FormEvent) {
-    event.preventDefault();
-    save.mutate(draft, {
-      onSuccess: () =>
-        push({
-          title: 'Provider saved',
-          description: data?.hasSecret
-            ? 'Settings updated. New key will be used on next meeting.'
-            : 'Settings saved. Enter the API key to enable transcription.',
-          variant: 'default',
-        }),
-      onError: (error) =>
-        push({ title: 'Save failed', description: String(error), variant: 'destructive' }),
-    });
-  }
 
   if (isLoading) {
     return (
@@ -69,12 +28,50 @@ export function ProviderForm() {
     );
   }
 
+  const formKey = data
+    ? [data.provider, data.model, data.language, data.azureRegion, data.hasSecret, data.diarizeMic].join(':')
+    : 'default';
+
+  return <ProviderFormEditor key={formKey} settings={data} />;
+}
+
+function ProviderFormEditor({ settings }: { settings: ProviderSettings | undefined }) {
+  const save = useSaveProviderSettings();
+  const { push } = useToast();
+  const [draft, setDraft] = useState<ProviderDraft>(() => ({
+    provider: settings?.provider ?? 'deepgram',
+    model: settings?.model ?? 'nova-3',
+    language: settings?.language ?? 'en',
+    azureRegion: settings?.azureRegion ?? '',
+    apiKey: null,
+    diarizeSystem: settings?.diarizeSystem ?? false,
+    diarizeMic: settings?.diarizeMic ?? true,
+  }));
+
+  const isAzure = draft.provider === 'azure';
+
+  function handleSave(event: React.FormEvent) {
+    event.preventDefault();
+    save.mutate(draft, {
+      onSuccess: () =>
+        push({
+          title: 'Provider saved',
+          description: settings?.hasSecret
+            ? 'Settings updated. New key will be used on next meeting.'
+            : 'Settings saved. Enter the API key to enable transcription.',
+          variant: 'default',
+        }),
+      onError: (error) =>
+        push({ title: 'Save failed', description: String(error), variant: 'destructive' }),
+    });
+  }
+
   return (
     <Card>
       <CardHeader>
         <CardTitle>Transcription provider</CardTitle>
         <CardDescription>
-          {data?.hasSecret
+          {settings?.hasSecret
             ? 'API key stored securely in the OS keychain. Leave the field blank to keep the existing key.'
             : 'No API key stored yet. Enter one to enable transcription.'}
         </CardDescription>

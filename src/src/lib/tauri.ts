@@ -1,8 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
-// ----- Tauri command wrappers -----
-// These match the Rust commands exposed by crates/app/src/commands/*.
 
 export type CapturePhase = 'Idle' | 'Preflight' | 'Starting' | 'Active' | 'Paused' | 'Stopping' | 'Failed';
 
@@ -12,7 +10,38 @@ export type CaptureStatus = {
   errorCode: string | null;
 };
 
-export type ProviderKind = 'Deepgram' | 'AssemblyAi' | 'Azure';
+type WireCapturePhase = 'idle' | 'preflight' | 'starting' | 'active' | 'paused' | 'stopping' | 'failed';
+
+type WirePermissionStatus = 'unknown' | 'denied' | 'granted';
+
+type WirePermissionSnapshot = {
+  screenRecording: WirePermissionStatus;
+  microphone: WirePermissionStatus;
+};
+
+type WireCaptureSnapshot = {
+  phase: WireCapturePhase;
+  meetingId: string | null;
+  error: string | null;
+};
+
+const CAPTURE_PHASES: Record<WireCapturePhase, CapturePhase> = {
+  idle: 'Idle',
+  preflight: 'Preflight',
+  starting: 'Starting',
+  active: 'Active',
+  paused: 'Paused',
+  stopping: 'Stopping',
+  failed: 'Failed',
+};
+
+const PERMISSION_STATUSES: Record<WirePermissionStatus, PermissionStatus> = {
+  unknown: 'Unknown',
+  denied: 'Denied',
+  granted: 'Granted',
+};
+
+export type ProviderKind = 'deepgram' | 'assemblyAi' | 'azure';
 
 export type ProviderSettings = {
   provider: ProviderKind;
@@ -20,6 +49,7 @@ export type ProviderSettings = {
   language: string | null;
   azureRegion: string | null;
   hasSecret: boolean;
+  diarizeSystem: boolean;
   diarizeMic: boolean;
 };
 
@@ -29,6 +59,7 @@ export type ProviderDraft = {
   language: string | null;
   azureRegion: string | null;
   apiKey: string | null;
+  diarizeSystem: boolean;
   diarizeMic: boolean;
 };
 
@@ -60,11 +91,16 @@ export type MeetingSegment = {
 };
 
 export async function captureStatus(): Promise<CaptureStatus> {
-  return invoke<CaptureStatus>('capture_status');
+  const snapshot = await invoke<WireCaptureSnapshot>('capture_status');
+  return {
+    phase: decodeWireValue(snapshot.phase, CAPTURE_PHASES, 'capture phase'),
+    meetingId: snapshot.meetingId,
+    errorCode: snapshot.error,
+  };
 }
 
-export async function startMeeting(): Promise<void> {
-  await invoke('start_meeting');
+export async function startMeeting(options: { diarizeMicrophone?: boolean } = {}): Promise<void> {
+  await invoke('start_meeting', { options });
 }
 
 export async function pauseMeeting(): Promise<void> {
@@ -80,7 +116,18 @@ export async function stopMeeting(): Promise<void> {
 }
 
 export async function capturePermissions(): Promise<PermissionSnapshot> {
-  return invoke<PermissionSnapshot>('capture_permissions');
+  const snapshot = await invoke<WirePermissionSnapshot>('capture_permissions');
+  return {
+    screenRecording: decodeWireValue(snapshot.screenRecording, PERMISSION_STATUSES, 'screen-recording permission'),
+    microphone: decodeWireValue(snapshot.microphone, PERMISSION_STATUSES, 'microphone permission'),
+  };
+}
+
+export async function requestCapturePermission(
+  kind: 'microphone' | 'screenRecording',
+): Promise<PermissionStatus> {
+  const status = await invoke<WirePermissionStatus>('request_capture_permission', { kind });
+  return decodeWireValue(status, PERMISSION_STATUSES, 'permission status');
 }
 
 export async function openCapturePermissionSettings(kind: 'microphone' | 'screenRecording'): Promise<void> {
@@ -91,8 +138,12 @@ export async function getProviderSettings(): Promise<ProviderSettings> {
   return invoke<ProviderSettings>('provider_settings');
 }
 
-export async function saveProviderSettings(draft: ProviderDraft): Promise<void> {
-  await invoke('save_provider_settings', { draft });
+export async function saveProviderSettings(draft: ProviderDraft): Promise<ProviderSettings> {
+  const { apiKey, ...settings } = draft;
+  return invoke<ProviderSettings>('save_provider_settings', {
+    settings,
+    secret: apiKey,
+  });
 }
 
 export async function listMeetings(limit = 50): Promise<MeetingSummary[]> {
@@ -107,7 +158,6 @@ export async function deleteMeeting(meetingId: string): Promise<void> {
   await invoke('delete_meeting', { meetingId });
 }
 
-// ----- Wire events -----
 export type WireEvent =
   | { EventType: 'ADD_TRANSCRIPT_SEGMENT'; CallId: string; SegmentId: string; Channel: string; Speaker?: string; StartTime: number; EndTime: number; Transcript: string; IsPartial: boolean }
   | { EventType: 'DELETE_TRANSCRIPT_SEGMENT'; CallId: string; SegmentId: string; Reason?: string }
@@ -124,5 +174,17 @@ export function onMeetingEvent(handler: (event: WireEvent) => void): Promise<Unl
 }
 
 export function onCaptureStatus(handler: (status: CaptureStatus) => void): Promise<UnlistenFn> {
-  return listen<CaptureStatus>('capture-status', (e) => handler(e.payload));
+  return listen<WireCaptureSnapshot>('capture-status', (e) => handler({
+    phase: decodeWireValue(e.payload.phase, CAPTURE_PHASES, 'capture phase'),
+    meetingId: e.payload.meetingId,
+    errorCode: e.payload.error,
+  }));
+}
+
+function decodeWireValue<T extends string>(value: string, values: Record<string, T>, label: string): T {
+  const decoded = values[value];
+  if (!decoded) {
+    throw new Error(`unsupported ${label}: ${value}`);
+  }
+  return decoded;
 }

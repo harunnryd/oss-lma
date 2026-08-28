@@ -58,7 +58,6 @@ impl ErrorCode {
     }
 }
 
-/// Commands controlling the sidecar audio link.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LinkCommand {
     Start,
@@ -67,7 +66,6 @@ pub enum LinkCommand {
     End,
 }
 
-/// State and telemetry notifications emitted by the sidecar audio link.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LinkEvent {
     Connected,

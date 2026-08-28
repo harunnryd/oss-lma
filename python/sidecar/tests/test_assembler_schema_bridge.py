@@ -11,8 +11,9 @@ def test_unlabelled_emission_omits_speaker_and_passes_outbound_schema():
         channel="CALLER",
         is_partial=True,
         items=[
-            WordItem(content="hello", type="pronunciation",
-                     start_time=0.0, end_time=0.3, speaker=None),
+            WordItem(
+                content="hello", type="pronunciation", start_time=0.0, end_time=0.3, speaker=None
+            ),
         ],
     )
     out = asm.on_result(result)

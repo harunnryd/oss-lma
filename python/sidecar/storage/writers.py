@@ -139,13 +139,6 @@ def write_meeting_started_update_offset(
 
 
 def write_deleted_segment(conn: sqlite3.Connection, ev: dict) -> None:
-    """Mark stale partial segments deleted after sidecar restart.
-
-    After sweep_stale_partials runs at startup, the segments have
-    is_partial = -1. We additionally remove any cached partial rows
-    for this SegmentId from this meeting so future reconciliations
-    start from a clean state.
-    """
     call_id, segment_id = normalize_deleted_segment(ev)
     conn.execute(
         "DELETE FROM segments WHERE meeting_id = ? AND segment_id = ?",
