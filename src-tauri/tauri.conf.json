@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "identifier": "com.osslma.desktop",
   "build": {
-    "frontendDist": "ui",
-    "beforeBundleCommand": "uv run --with pyinstaller python scripts/build_sidecar.py"
+    "frontendDist": "../src/dist",
+    "beforeBundleCommand": "uv run --with pyinstaller python ../scripts/build_sidecar.py"
   },
   "app": {
     "withGlobalTauri": true,
@@ -20,8 +20,12 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["app"],
-    "icon": ["icons/icon.png"],
+    "targets": [
+      "app"
+    ],
+    "icon": [
+      "icons/icon.png"
+    ],
     "resources": {
       "../target/sidecar/sidecar": "sidecar"
     },
