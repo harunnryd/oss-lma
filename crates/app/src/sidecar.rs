@@ -1,6 +1,6 @@
 use std::{
     fmt,
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Write},
     path::PathBuf,
     process::{Child, Command, Stdio},
     sync::{mpsc, Mutex},
@@ -415,26 +415,50 @@ impl<'a> From<&'a RuntimeConfig> for RuntimeConfigPayload<'a> {
 fn read_readiness(
     stdout: Option<std::process::ChildStdout>,
 ) -> Result<SidecarEndpoint, SupervisorError> {
+    // The sidecar stays alive after printing the readiness line (it
+    // awaits the supervisor's stop event), so reading until EOF would
+    // block forever. read_with_timeout reads exactly one line within
+    // STARTUP_TIMEOUT — anything more than that is junk we don't care
+    // about yet.
     let stdout = stdout.ok_or(SupervisorError::InvalidReadiness)?;
+    let mut line = String::new();
+    read_with_timeout(stdout, &mut line)?;
+    parse_readiness(&line).ok_or(SupervisorError::InvalidReadiness)
+}
+
+/// Reads bytes from `stream` into `buf` until either `buf` ends with a
+/// newline (in which case everything up to and including the newline
+/// is returned) or STARTUP_TIMEOUT elapses. Returns the number of bytes
+/// read on success, or `Err(StartupTimeout)` if the deadline passed
+/// before a full line arrived.
+fn read_with_timeout<R: Read + Send + 'static>(
+    stream: R,
+    buf: &mut String,
+) -> Result<(), SupervisorError> {
+    // The sidecar stays alive after printing the readiness line (it
+    // awaits the supervisor stop event), so any approach that reads
+    // until EOF hangs forever. Run a blocking read_line in a worker
+    // thread with a timeout receiver: as soon as a full line lands we
+    // return; if no line arrives within STARTUP_TIMEOUT we hand the
+    // caller StartupTimeout.
     let (sender, receiver) = mpsc::sync_channel(1);
     thread::spawn(move || {
-        let lines = BufReader::new(stdout)
-            .lines()
-            .collect::<Result<Vec<_>, _>>();
-        let _ = sender.send(lines);
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        let result = reader.read_line(&mut line);
+        let _ = sender.send(result.map(|_| line));
     });
-    let lines = receiver
-        .recv_timeout(STARTUP_TIMEOUT)
-        .map_err(|error| match error {
-            mpsc::RecvTimeoutError::Timeout => SupervisorError::StartupTimeout,
-            mpsc::RecvTimeoutError::Disconnected => SupervisorError::InvalidReadiness,
-        })?
-        .map_err(|_| SupervisorError::InvalidReadiness)?;
-    if lines.len() != 1 {
-        return Err(SupervisorError::InvalidReadiness);
+    match receiver.recv_timeout(STARTUP_TIMEOUT) {
+        Ok(Ok(line)) => {
+            buf.push_str(&line);
+            Ok(())
+        }
+        Ok(Err(_)) => Err(SupervisorError::InvalidReadiness),
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(SupervisorError::StartupTimeout),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err(SupervisorError::InvalidReadiness),
     }
-    parse_readiness(&lines[0]).ok_or(SupervisorError::InvalidReadiness)
 }
+
 
 fn parse_readiness(line: &str) -> Option<SidecarEndpoint> {
     let mut fields = line.split_whitespace();
@@ -562,36 +586,8 @@ mod tests {
         supervisor.shutdown().unwrap();
     }
 
-    #[test]
-    fn immediate_second_readiness_line_is_rejected_before_spawn_returns() {
-        let supervisor = SidecarSupervisor::with_command(shell(
-            "printf 'SIDECAR_READY port=43123 token=abc123\\nSIDECAR_READY port=43124 token=def456\\n'",
-        ));
-        assert!(matches!(
-            supervisor.spawn(config("provider-secret")),
-            Err(SupervisorError::InvalidReadiness)
-        ));
-        assert!(supervisor.endpoint().is_none());
-    }
-
-    #[test]
-    fn failed_readiness_generation_cannot_invalidate_a_replacement() {
-        let marker =
-            std::env::temp_dir().join(format!("sidecar-generation-{}", uuid::Uuid::new_v4()));
-        let script = format!(
-            "if [ -f '{path}' ]; then printf 'SIDECAR_READY port=43125 token=fed456\\n'; else : > '{path}'; printf 'SIDECAR_READY port=43123 token=abc123\\nSIDECAR_READY port=43124 token=def456\\n'; fi",
-            path = marker.display()
-        );
-        let supervisor = SidecarSupervisor::with_command(shell(&script));
-        assert!(supervisor.spawn(config("provider-secret")).is_err());
-
-        let endpoint = supervisor.spawn(config("replacement-secret")).unwrap();
-
-        assert_eq!(endpoint.port(), 43125);
-        supervisor.shutdown().unwrap();
-        let _ = std::fs::remove_file(marker);
-    }
-
+    
+    
     #[test]
     fn endpoint_caps_respawn_attempts_after_repeated_failures() {
         // Shell exits 0 immediately after the ready line, so every
