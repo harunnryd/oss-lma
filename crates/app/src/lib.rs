@@ -13,12 +13,13 @@ use std::sync::Arc;
 use tauri::{Manager, Runtime};
 
 use crate::{
-    settings::{OsSecretStore, SecretStore, SettingsRepository},
+    settings::{pick_secret_store, SecretStore, SettingsRepository},
     sidecar::{SidecarCommand, SidecarSupervisor},
 };
 
 pub struct ProviderSettingsState {
     repository: SettingsRepository,
+    secret_store: Box<dyn SecretStore>,
     sidecar: Arc<SidecarSupervisor>,
 }
 
@@ -39,7 +40,8 @@ pub fn initialize_capture<R: Runtime>(app: &tauri::App<R>) -> Result<(), String>
         .map_err(|error| error.to_string())?;
     let repository = SettingsRepository::open(&settings_path).map_err(|error| error.to_string())?;
     let settings = repository.load().map_err(|error| error.to_string())?;
-    if let Ok(api_key) = OsSecretStore.get(settings.provider) {
+    let secret_store: Box<dyn SecretStore> = pick_secret_store(&app_data_dir);
+    if let Ok(api_key) = secret_store.get(settings.provider) {
         sidecar
             .spawn(SidecarSupervisor::runtime_config(settings, api_key))
             .map_err(|error| error.to_string())?;
@@ -49,6 +51,7 @@ pub fn initialize_capture<R: Runtime>(app: &tauri::App<R>) -> Result<(), String>
     }
     if !app.manage(ProviderSettingsState {
         repository,
+        secret_store,
         sidecar: sidecar.clone(),
     }) {
         return Err("provider settings state has already been initialized".to_owned());

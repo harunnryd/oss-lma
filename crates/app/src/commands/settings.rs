@@ -1,7 +1,7 @@
 use tauri::State;
 
 use crate::{
-    settings::{OsSecretStore, ProviderPublicSettings, ProviderSettings, SecretStore},
+    settings::{ProviderPublicSettings, ProviderSettings},
     sidecar::SidecarSupervisor,
     ProviderSettingsState,
 };
@@ -13,7 +13,7 @@ pub fn provider_settings(
     let settings = state.repository.load().map_err(|error| error.to_string())?;
     Ok(ProviderPublicSettings::from_settings(
         &settings,
-        OsSecretStore.has(settings.provider),
+        state.secret_store.as_ref().has(settings.provider),
     ))
 }
 
@@ -28,7 +28,7 @@ pub fn save_provider_settings(
         if secret.trim().is_empty() {
             return Err("the provider API key cannot be empty".to_owned());
         }
-        OsSecretStore
+        state.secret_store.as_ref()
             .replace(settings.provider, &secret)
             .map_err(|error| error.to_string())?;
     }
@@ -36,9 +36,9 @@ pub fn save_provider_settings(
         .repository
         .save(&settings)
         .map_err(|error| error.to_string())?;
-    let has_secret = OsSecretStore.has(settings.provider);
+    let has_secret = state.secret_store.as_ref().has(settings.provider);
     if has_secret {
-        let secret = OsSecretStore
+        let secret = state.secret_store.as_ref()
             .get(settings.provider)
             .map_err(|error| error.to_string())?;
         state
